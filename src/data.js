@@ -61,6 +61,44 @@ export const users = [
   }
 ];
 
+export const drivers = [
+  {
+    id: "driver-001",
+    phoneNumber: "9123456789",
+    name: "Arindam Saha",
+    badgeNumber: "DRV-1208",
+    role: "Driver",
+    status: "Assigned",
+    rating: 4.9
+  },
+  {
+    id: "driver-002",
+    phoneNumber: "9234567890",
+    name: "Priya Mondal",
+    badgeNumber: "DRV-2084",
+    role: "Conductor",
+    status: "Available",
+    rating: 4.7
+  }
+];
+
+export const buses = [
+  {
+    id: "bus-001",
+    busNumber: "WB-19B-3158",
+    capacityKg: 4200,
+    routeId: "route-kolkata-haldia",
+    status: "Assigned"
+  },
+  {
+    id: "bus-002",
+    busNumber: "WB-34C-2877",
+    capacityKg: 3900,
+    routeId: "route-howrah-digha",
+    status: "Idle"
+  }
+];
+
 export const bookings = [
   {
     id: "BK-240301",
@@ -86,4 +124,46 @@ export const bookings = [
   }
 ];
 
+export const tripAssignments = [
+  {
+    id: "trip-001",
+    driverId: "driver-001",
+    busId: "bus-001",
+    routeId: "route-kolkata-haldia",
+    slotId: "slot-1200",
+    bookingIds: ["BK-240301"],
+    status: "Active",
+    startedAt: "2026-03-20T12:05:00.000Z",
+    currentStopId: "kolaghat",
+    nextStopId: "mecheda"
+  }
+];
+
+export const liveTripLocations = new Map([
+  [
+    "trip-001",
+    {
+      tripId: "trip-001",
+      driverId: "driver-001",
+      lat: 22.4267,
+      lng: 87.8652,
+      speed: 42,
+      heading: 118,
+      label: "Near Kolaghat bridge",
+      updatedAt: "2026-03-20T12:40:00.000Z"
+    }
+  ]
+]);
+
+export const liveTripEvents = new Map([
+  [
+    "trip-001",
+    [
+      { type: "trip.started", message: "Trip started from Kolkata Gate", time: "2026-03-20T12:05:00.000Z" },
+      { type: "stop.departed", message: "Departed Kolaghat", time: "2026-03-20T12:31:00.000Z" }
+    ]
+  ]
+]);
+
 export const otpSessions = new Map();
+export const refreshSessions = new Map();

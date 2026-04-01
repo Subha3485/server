@@ -1,4 +1,13 @@
-import { bookings, routes, users } from "../data/store.js";
+import {
+  bookings,
+  buses,
+  drivers,
+  liveTripEvents,
+  liveTripLocations,
+  routes,
+  tripAssignments,
+  users
+} from "../data.js";
 
 const BOOKING_STATUSES = ["Booked", "Loaded", "In Transit", "Reached", "Delivered"];
 
@@ -20,6 +29,38 @@ export function getRouteById(routeId) {
 
 export function getUserById(userId) {
   return users.find((user) => user.id === userId);
+}
+
+export function getDriverById(driverId) {
+  return drivers.find((driver) => driver.id === driverId);
+}
+
+export function getDriverByPhone(phoneNumber) {
+  return drivers.find((driver) => driver.phoneNumber === phoneNumber);
+}
+
+export function getBusById(busId) {
+  return buses.find((bus) => bus.id === busId);
+}
+
+export function getTripById(tripId) {
+  return tripAssignments.find((trip) => trip.id === tripId);
+}
+
+export function getTripForDriver(driverId) {
+  return tripAssignments.find((trip) => trip.driverId === driverId);
+}
+
+export function getAllRoutes() {
+  return routes.map(sanitizeRoute);
+}
+
+export function getAllBuses() {
+  return buses;
+}
+
+export function getAllDrivers() {
+  return drivers;
 }
 
 export function validateStopSequence(route, pickupStopId, dropStopId) {
@@ -139,6 +180,76 @@ export function createBooking({
   return serializeBooking(booking);
 }
 
+export function createRoute({ name, code, baseFare, perKmFare, stops = [], slots = [] }) {
+  if (!name || !code) {
+    throw createBadRequest("name and code are required.");
+  }
+
+  const route = {
+    id: `route-${slugify(name)}-${routes.length + 1}`,
+    name,
+    code,
+    baseFare: Number(baseFare ?? 0),
+    perKmFare: Number(perKmFare ?? 0),
+    stops: normalizeStops(stops),
+    slots: normalizeSlots(slots)
+  };
+
+  routes.push(route);
+  return sanitizeRoute(route);
+}
+
+export function createBus({ busNumber, capacityKg, routeId, status = "Idle" }) {
+  if (!busNumber || !capacityKg) {
+    throw createBadRequest("busNumber and capacityKg are required.");
+  }
+
+  if (routeId && !getRouteById(routeId)) {
+    throw createBadRequest("routeId does not exist.");
+  }
+
+  const bus = {
+    id: `bus-${String(buses.length + 1).padStart(3, "0")}`,
+    busNumber,
+    capacityKg: Number(capacityKg),
+    routeId: routeId ?? null,
+    status
+  };
+
+  buses.push(bus);
+  return bus;
+}
+
+export function createDriver({ name, phoneNumber, badgeNumber, role = "Driver", status = "Available", rating = 5 }) {
+  if (!name || !phoneNumber || !badgeNumber) {
+    throw createBadRequest("name, phoneNumber and badgeNumber are required.");
+  }
+
+  const driver = {
+    id: `driver-${String(drivers.length + 1).padStart(3, "0")}`,
+    phoneNumber,
+    name,
+    badgeNumber,
+    role,
+    status,
+    rating: Number(rating)
+  };
+
+  drivers.push(driver);
+  return driver;
+}
+
+export function updateBookingStatus(bookingId, status) {
+  const booking = bookings.find((item) => item.id === bookingId);
+  if (!booking) {
+    throw createBadRequest("Booking not found.");
+  }
+
+  booking.status = status;
+  booking.tracking.unshift({ status, time: new Date().toISOString() });
+  return serializeBooking(booking);
+}
+
 export function serializeBooking(booking) {
   const route = getRouteById(booking.routeId);
   const slot = route?.slots.find((item) => item.id === booking.slotId);
@@ -162,6 +273,204 @@ export function getBookingsForUser(userId) {
 export function getBookingById(bookingId) {
   const booking = bookings.find((item) => item.id === bookingId);
   return booking ? serializeBooking(booking) : null;
+}
+
+export function serializeTrip(trip) {
+  const route = getRouteById(trip.routeId);
+  const bus = getBusById(trip.busId);
+  const driver = getDriverById(trip.driverId);
+  const slot = route?.slots.find((item) => item.id === trip.slotId) ?? null;
+  const currentStop = route?.stops.find((stop) => stop.id === trip.currentStopId) ?? null;
+  const nextStop = route?.stops.find((stop) => stop.id === trip.nextStopId) ?? null;
+  const location = liveTripLocations.get(trip.id) ?? null;
+  const cargoBookings = trip.bookingIds
+    .map((bookingId) => getBookingById(bookingId))
+    .filter(Boolean);
+
+  return {
+    ...trip,
+    route: route ? sanitizeRoute(route) : null,
+    bus,
+    driver,
+    slot,
+    currentStop,
+    nextStop,
+    liveLocation: location,
+    cargoBookings,
+    stopCount: route?.stops.length ?? 0
+  };
+}
+
+export function createDriverSession(phoneNumber) {
+  const driver = getDriverByPhone(phoneNumber);
+  if (!driver) {
+    throw createBadRequest("Driver not found.");
+  }
+
+  return {
+    token: `driver-token-${driver.id}`,
+    driver,
+    assignment: getTripForDriver(driver.id) ? serializeTrip(getTripForDriver(driver.id)) : null
+  };
+}
+
+export function getDriverAssignment(driverId) {
+  const trip = getTripForDriver(driverId);
+  if (!trip) {
+    throw createBadRequest("No trip assignment available.");
+  }
+
+  return serializeTrip(trip);
+}
+
+export function getTripTracking(tripId) {
+  const trip = getTripById(tripId);
+  if (!trip) {
+    throw createBadRequest("Trip not found.");
+  }
+
+  const serializedTrip = serializeTrip(trip);
+  return {
+    tripId: serializedTrip.id,
+    status: serializedTrip.status,
+    currentStop: serializedTrip.currentStop,
+    nextStop: serializedTrip.nextStop,
+    route: serializedTrip.route,
+    bus: serializedTrip.bus,
+    liveLocation: serializedTrip.liveLocation,
+    events: liveTripEvents.get(tripId) ?? []
+  };
+}
+
+export function updateTripStatus(tripId, status) {
+  const trip = getTripById(tripId);
+  if (!trip) {
+    throw createBadRequest("Trip not found.");
+  }
+
+  trip.status = status;
+  appendTripEvent(tripId, {
+    type: "trip.status",
+    message: `Trip marked as ${status}`,
+    time: new Date().toISOString()
+  });
+
+  return serializeTrip(trip);
+}
+
+export function updateTripLocation({
+  tripId,
+  driverId,
+  lat,
+  lng,
+  speed = 0,
+  heading = 0,
+  label = "On route"
+}) {
+  const trip = getTripById(tripId);
+  if (!trip) {
+    throw createBadRequest("Trip not found.");
+  }
+
+  if (trip.driverId !== driverId) {
+    throw createBadRequest("Driver is not assigned to this trip.");
+  }
+
+  const payload = {
+    tripId,
+    driverId,
+    lat: Number(lat),
+    lng: Number(lng),
+    speed: Number(speed),
+    heading: Number(heading),
+    label,
+    updatedAt: new Date().toISOString()
+  };
+
+  liveTripLocations.set(tripId, payload);
+  return payload;
+}
+
+export function updateTripStop({ tripId, currentStopId, nextStopId, message }) {
+  const trip = getTripById(tripId);
+  if (!trip) {
+    throw createBadRequest("Trip not found.");
+  }
+
+  trip.currentStopId = currentStopId ?? trip.currentStopId;
+  trip.nextStopId = nextStopId ?? trip.nextStopId;
+
+  appendTripEvent(tripId, {
+    type: "stop.update",
+    message: message ?? "Trip stop update received",
+    time: new Date().toISOString()
+  });
+
+  return serializeTrip(trip);
+}
+
+export function appendTripEvent(tripId, event) {
+  const existing = liveTripEvents.get(tripId) ?? [];
+  existing.unshift(event);
+  liveTripEvents.set(tripId, existing.slice(0, 20));
+}
+
+export function getAdminSummary() {
+  const activeTrips = tripAssignments.filter((trip) => trip.status === "Active").length;
+  const activeBookings = bookings.filter((booking) => booking.status !== "Delivered").length;
+  const revenue = bookings.reduce((sum, booking) => sum + booking.fare, 0);
+
+  return {
+    totals: {
+      routes: routes.length,
+      buses: buses.length,
+      drivers: drivers.length,
+      bookings: bookings.length,
+      activeTrips,
+      revenue
+    },
+    activeTrips: tripAssignments.map(serializeTrip),
+    routes: routes.map(sanitizeRoute),
+    buses,
+    drivers,
+    recentBookings: bookings.slice(0, 6).map(serializeBooking),
+    fleetStatus: {
+      assigned: buses.filter((bus) => bus.status === "Assigned").length,
+      idle: buses.filter((bus) => bus.status === "Idle").length,
+      activeBookings
+    }
+  };
+}
+
+function normalizeStops(stops) {
+  return (stops ?? [])
+    .filter((stop) => stop?.name)
+    .map((stop, index) => ({
+      id: stop.id ?? `${slugify(stop.name)}-${index + 1}`,
+      name: stop.name,
+      kmFromStart: Number(stop.kmFromStart ?? index * 20),
+      region: stop.region ?? "Unknown"
+    }));
+}
+
+function normalizeSlots(slots) {
+  return (slots ?? [])
+    .filter((slot) => slot?.time)
+    .map((slot, index) => ({
+      id: slot.id ?? `slot-${String(index + 1).padStart(4, "0")}`,
+      time: slot.time,
+      arrival: slot.arrival ?? slot.time,
+      capacityUsed: Number(slot.capacityUsed ?? 0),
+      busNumber: slot.busNumber ?? "Pending"
+    }));
+}
+
+function slugify(value) {
+  return String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 export function createBadRequest(message) {

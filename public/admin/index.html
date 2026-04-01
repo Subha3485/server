@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bus Logistics Admin</title>
+    <link rel="stylesheet" href="/admin/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">BL</div>
+          <div>
+            <h1>Admin Control</h1>
+            <p>Fleet command center</p>
+          </div>
+        </div>
+        <nav id="navLinks">
+          <a href="#dashboard" data-view="dashboard">Dashboard</a>
+          <a href="#routes" data-view="routes">Route Management</a>
+          <a href="#buses" data-view="buses">Bus Management</a>
+          <a href="#drivers" data-view="drivers">Driver Management</a>
+          <a href="#bookings" data-view="bookings">Booking Monitor</a>
+          <a href="#analytics" data-view="analytics">Analytics</a>
+          <a href="#reports" data-view="reports">Reports</a>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <section class="hero">
+          <div>
+            <p class="eyebrow">Live operations</p>
+            <h2 id="heroTitle">Monitor routes, buses, drivers, cargo bookings, and trip health.</h2>
+          </div>
+          <div class="hero-actions">
+            <button id="seedTripButton" class="ghost">Simulate realtime</button>
+            <button id="refreshButton" class="refresh">Refresh data</button>
+          </div>
+        </section>
+
+        <section class="stats" id="stats"></section>
+
+        <section id="view-dashboard" class="view-panel">
+          <div class="grid">
+            <article class="panel" data-section="routes">
+              <div class="panel-head">
+                <h3>Routes</h3>
+                <span class="tag">Management</span>
+              </div>
+              <div id="routesList" class="stack"></div>
+            </article>
+
+            <article class="panel" data-section="trips">
+              <div class="panel-head">
+                <h3>Active Trips</h3>
+                <span class="tag">Realtime</span>
+              </div>
+              <div id="tripsList" class="stack"></div>
+            </article>
+
+            <article class="panel" data-section="drivers">
+              <div class="panel-head">
+                <h3>Drivers</h3>
+                <span class="tag">Operations</span>
+              </div>
+              <div id="driversList" class="stack"></div>
+            </article>
+
+            <article class="panel" data-section="buses">
+              <div class="panel-head">
+                <h3>Buses</h3>
+                <span class="tag">Fleet</span>
+              </div>
+              <div id="busesList" class="stack"></div>
+            </article>
+
+            <article class="panel wide">
+              <div class="panel-head">
+                <h3>Booking Monitor</h3>
+                <span class="tag">Recent</span>
+              </div>
+              <div id="bookingsTable"></div>
+            </article>
+
+            <article class="panel wide">
+              <div class="panel-head">
+                <h3>Analytics & Reports</h3>
+                <span class="tag">Revenue</span>
+              </div>
+              <div id="analyticsSummary" class="analytics"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="view-routes" class="view-panel hidden">
+          <div class="grid single">
+            <article class="panel">
+              <div class="panel-head">
+                <h3>Create Route</h3>
+                <span class="tag">New</span>
+              </div>
+              <form id="routeForm" class="form-grid">
+                <input name="name" placeholder="Route name" required />
+                <input name="code" placeholder="Route code" required />
+                <input name="baseFare" type="number" placeholder="Base fare" required />
+                <input name="perKmFare" type="number" step="0.1" placeholder="Per km fare" required />
+                <textarea name="stops" placeholder="Stops, one per line: Stop Name|Region|Km"></textarea>
+                <textarea name="slots" placeholder="Slots, one per line: 10:30 AM|1:10 PM|WB-19B-2451"></textarea>
+                <button class="refresh" type="submit">Create Route</button>
+              </form>
+            </article>
+            <article class="panel">
+              <div class="panel-head">
+                <h3>All Routes</h3>
+                <span class="tag">List</span>
+              </div>
+              <div id="routesManagerList" class="stack"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="view-buses" class="view-panel hidden">
+          <div class="grid single">
+            <article class="panel">
+              <div class="panel-head">
+                <h3>Create Bus</h3>
+                <span class="tag">Fleet</span>
+              </div>
+              <form id="busForm" class="form-grid">
+                <input name="busNumber" placeholder="Bus number" required />
+                <input name="capacityKg" type="number" placeholder="Capacity (kg)" required />
+                <input name="routeId" placeholder="Route ID (optional)" />
+                <select name="status">
+                  <option>Idle</option>
+                  <option>Assigned</option>
+                </select>
+                <button class="refresh" type="submit">Create Bus</button>
+              </form>
+            </article>
+            <article class="panel">
+              <div class="panel-head">
+                <h3>Fleet Registry</h3>
+                <span class="tag">List</span>
+              </div>
+              <div id="busesManagerList" class="stack"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="view-drivers" class="view-panel hidden">
+          <div class="grid single">
+            <article class="panel">
+              <div class="panel-head">
+                <h3>Create Driver</h3>
+                <span class="tag">Operations</span>
+              </div>
+              <form id="driverForm" class="form-grid">
+                <input name="name" placeholder="Driver name" required />
+                <input name="phoneNumber" placeholder="Phone number" required />
+                <input name="badgeNumber" placeholder="Badge number" required />
+                <select name="role">
+                  <option>Driver</option>
+                  <option>Conductor</option>
+                </select>
+                <select name="status">
+                  <option>Available</option>
+                  <option>Assigned</option>
+                </select>
+                <button class="refresh" type="submit">Create Driver</button>
+              </form>
+            </article>
+            <article class="panel">
+              <div class="panel-head">
+                <h3>Driver Registry</h3>
+                <span class="tag">List</span>
+              </div>
+              <div id="driversManagerList" class="stack"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="view-bookings" class="view-panel hidden">
+          <article class="panel">
+            <div class="panel-head">
+              <h3>Booking Monitor</h3>
+              <span class="tag">Status updates</span>
+            </div>
+            <div id="bookingManagerTable"></div>
+          </article>
+        </section>
+
+        <section id="view-analytics" class="view-panel hidden">
+          <article class="panel">
+            <div class="panel-head">
+              <h3>Analytics Overview</h3>
+              <span class="tag">KPIs</span>
+            </div>
+            <div id="analyticsDetails" class="analytics"></div>
+          </article>
+        </section>
+
+        <section id="view-reports" class="view-panel hidden">
+          <article class="panel">
+            <div class="panel-head">
+              <h3>Reports</h3>
+              <span class="tag">Export-ready</span>
+            </div>
+            <div id="reportsSummary" class="stack"></div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script type="module" src="/admin/app.js"></script>
+  </body>
+</html>
