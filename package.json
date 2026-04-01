@@ -12,10 +12,11 @@
     "start:prod": "node --env-file-if-exists=.env src/index.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": "22.x"
   },
   "dependencies": {
     "cors": "^2.8.5",
+    "dotenv": "^17.3.1",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.3",
     "mongodb": "^7.1.1",
