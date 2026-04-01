@@ -7,6 +7,28 @@
     <link rel="stylesheet" href="/admin/styles.css" />
   </head>
   <body>
+    <div id="authGate" class="shell" style="min-height:100vh;align-items:center;justify-content:center;">
+      <main class="content" style="max-width:520px;width:100%;margin:auto;padding:24px;">
+        <section class="hero">
+          <div>
+            <p class="eyebrow">Admin Sign In</p>
+            <h2>Authenticate with OTP to access the control center.</h2>
+          </div>
+        </section>
+        <section class="panel">
+          <form id="adminLoginForm" class="form-grid">
+            <input id="adminPhone" name="phone" placeholder="Admin phone number" value="9142217836" required />
+            <button class="refresh" type="submit">Send OTP</button>
+          </form>
+          <form id="adminOtpForm" class="form-grid" style="margin-top:16px;">
+            <input id="adminOtp" name="otp" placeholder="Enter OTP" required />
+            <button class="refresh" type="submit">Verify OTP</button>
+          </form>
+          <p id="authMessage" class="meta" style="margin-top:12px;">Use an admin phone number to sign in.</p>
+        </section>
+      </main>
+    </div>
+
     <div class="shell">
       <aside class="sidebar">
         <div class="brand">

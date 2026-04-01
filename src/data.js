@@ -1,22 +1,222 @@
-export const routes = [
+const routeKolkataHaldiaStops = [
   {
-    id: "route-kolkata-haldia",
-    name: "Kolkata to Haldia",
-    code: "WB-116 Cargo Line",
-    baseFare: 85,
+    _id: "stop-dankuni",
+    name: "Dankuni",
+    location: { lat: 22.679, lng: 88.287 },
+    order: 1,
+    routeId: "route-kolkata-haldia",
+    kmFromStart: 0,
+    region: "Hooghly"
+  },
+  {
+    _id: "stop-kolkata-gate",
+    name: "Kolkata Gate",
+    location: { lat: 22.5726, lng: 88.3639 },
+    order: 2,
+    routeId: "route-kolkata-haldia",
+    kmFromStart: 22,
+    region: "Kolkata"
+  },
+  {
+    _id: "stop-uluberia",
+    name: "Uluberia",
+    location: { lat: 22.4703, lng: 88.1148 },
+    order: 3,
+    routeId: "route-kolkata-haldia",
+    kmFromStart: 48,
+    region: "Howrah"
+  },
+  {
+    _id: "stop-bagnan",
+    name: "Bagnan",
+    location: { lat: 22.4698, lng: 87.9711 },
+    order: 4,
+    routeId: "route-kolkata-haldia",
+    kmFromStart: 67,
+    region: "Howrah"
+  },
+  {
+    _id: "stop-kolaghat",
+    name: "Kolaghat",
+    location: { lat: 22.4301, lng: 87.8592 },
+    order: 5,
+    routeId: "route-kolkata-haldia",
+    kmFromStart: 94,
+    region: "Purba Medinipur"
+  },
+  {
+    _id: "stop-mecheda",
+    name: "Mecheda",
+    location: { lat: 22.4219, lng: 87.7533 },
+    order: 6,
+    routeId: "route-kolkata-haldia",
+    kmFromStart: 108,
+    region: "Purba Medinipur"
+  },
+  {
+    _id: "stop-tamluk",
+    name: "Tamluk",
+    location: { lat: 22.2963, lng: 87.9217 },
+    order: 7,
+    routeId: "route-kolkata-haldia",
+    kmFromStart: 128,
+    region: "Purba Medinipur"
+  },
+  {
+    _id: "stop-nandakumar",
+    name: "Nandakumar",
+    location: { lat: 22.1626, lng: 87.9984 },
+    order: 8,
+    routeId: "route-kolkata-haldia",
+    kmFromStart: 146,
+    region: "Purba Medinipur"
+  },
+  {
+    _id: "stop-durgachak",
+    name: "Durgachak",
+    location: { lat: 22.0502, lng: 88.0584 },
+    order: 9,
+    routeId: "route-kolkata-haldia",
+    kmFromStart: 171,
+    region: "Haldia"
+  },
+  {
+    _id: "stop-haldia-depot",
+    name: "Haldia Depot",
+    location: { lat: 22.0667, lng: 88.0698 },
+    order: 10,
+    routeId: "route-kolkata-haldia",
+    kmFromStart: 184,
+    region: "Haldia"
+  }
+];
+
+const routeHowrahDighaStops = [
+  {
+    _id: "stop-howrah-terminus",
+    name: "Howrah Terminus",
+    location: { lat: 22.5958, lng: 88.2636 },
+    order: 1,
+    routeId: "route-howrah-digha",
+    kmFromStart: 0,
+    region: "Howrah"
+  },
+  {
+    _id: "stop-santragachi",
+    name: "Santragachi",
+    location: { lat: 22.5839, lng: 88.2843 },
+    order: 2,
+    routeId: "route-howrah-digha",
+    kmFromStart: 11,
+    region: "Howrah"
+  },
+  {
+    _id: "stop-uluberia-digha",
+    name: "Uluberia",
+    location: { lat: 22.4703, lng: 88.1148 },
+    order: 3,
+    routeId: "route-howrah-digha",
+    kmFromStart: 36,
+    region: "Howrah"
+  },
+  {
+    _id: "stop-kolaghat-digha",
+    name: "Kolaghat",
+    location: { lat: 22.4301, lng: 87.8592 },
+    order: 4,
+    routeId: "route-howrah-digha",
+    kmFromStart: 82,
+    region: "Purba Medinipur"
+  },
+  {
+    _id: "stop-nandakumar-digha",
+    name: "Nandakumar",
+    location: { lat: 22.1626, lng: 87.9984 },
+    order: 5,
+    routeId: "route-howrah-digha",
+    kmFromStart: 131,
+    region: "Purba Medinipur"
+  },
+  {
+    _id: "stop-contai",
+    name: "Contai",
+    location: { lat: 21.7789, lng: 87.7483 },
+    order: 6,
+    routeId: "route-howrah-digha",
+    kmFromStart: 187,
+    region: "Purba Medinipur"
+  },
+  {
+    _id: "stop-digha",
+    name: "Digha",
+    location: { lat: 21.6237, lng: 87.5076 },
+    order: 7,
+    routeId: "route-howrah-digha",
+    kmFromStart: 226,
+    region: "East Midnapore"
+  }
+];
+
+export const seedUsers = [
+  {
+    _id: "user-001",
+    name: "Subhadeep Samanta",
+    phone: "9831047286",
+    email: "subhadeep@buslogistics.dev",
+    role: "customer",
+    rating: 4.9,
+    createdAt: "2026-03-15T09:30:00.000Z",
+    usage: "Business",
+    language: "English",
+    walletBalance: 3240,
+    gstNumber: "19AABCU9603R1ZX",
+    savedRouteIds: ["route-kolkata-haldia"],
+    savedStopIds: ["stop-kolaghat", "stop-haldia-depot"]
+  },
+  {
+    _id: "driver-001",
+    name: "Mansur ali Saha",
+    phone: "9174558326",
+    email: "saha.ops@buslogistics.dev",
+    role: "driver",
+    rating: 4.9,
+    createdAt: "2026-03-14T08:00:00.000Z",
+    badgeNumber: "DRV-1208",
+    status: "Assigned"
+  },
+  {
+    _id: "driver-002",
+    name: "Sannyasi Mondal",
+    phone: "9163892745",
+    email: "mondal.ops@buslogistics.dev",
+    role: "driver",
+    rating: 4.7,
+    createdAt: "2026-03-16T10:00:00.000Z",
+    badgeNumber: "DRV-2084",
+    status: "Available"
+  },
+  {
+    _id: "admin-001",
+    name: "Control Room Admin",
+    phone: "9142217836",
+    email: "control.admin@buslogistics.dev",
+    role: "admin",
+    rating: 5,
+    createdAt: "2026-03-10T07:00:00.000Z"
+  }
+];
+
+export const seedRoutes = [
+  {
+    _id: "route-kolkata-haldia",
+    routeName: "Kolkata to Haldia",
+    startLocation: "Kolkata Gate",
+    endLocation: "Haldia Depot",
+    stopIds: routeKolkataHaldiaStops.map((stop) => stop._id),
+    distance: 184,
+    basePrice: 85,
     perKmFare: 5.2,
-    stops: [
-      { id: "dankuni", name: "Dankuni", kmFromStart: 0, region: "Hooghly" },
-      { id: "kolkata-gate", name: "Kolkata Gate", kmFromStart: 22, region: "Kolkata" },
-      { id: "uluberia", name: "Uluberia", kmFromStart: 48, region: "Howrah" },
-      { id: "bagnan", name: "Bagnan", kmFromStart: 67, region: "Howrah" },
-      { id: "kolaghat", name: "Kolaghat", kmFromStart: 94, region: "Purba Medinipur" },
-      { id: "mecheda", name: "Mecheda", kmFromStart: 108, region: "Purba Medinipur" },
-      { id: "tamluk", name: "Tamluk", kmFromStart: 128, region: "Purba Medinipur" },
-      { id: "nandakumar", name: "Nandakumar", kmFromStart: 146, region: "Purba Medinipur" },
-      { id: "durgachak", name: "Durgachak", kmFromStart: 171, region: "Haldia" },
-      { id: "haldia-depot", name: "Haldia Depot", kmFromStart: 184, region: "Haldia" }
-    ],
+    code: "WB-116 Cargo Line",
     slots: [
       { id: "slot-1030", time: "10:30 AM", arrival: "1:10 PM", capacityUsed: 42, busNumber: "WB-19B-2451" },
       { id: "slot-1200", time: "12:00 PM", arrival: "2:45 PM", capacityUsed: 68, busNumber: "WB-19B-3158" },
@@ -24,20 +224,15 @@ export const routes = [
     ]
   },
   {
-    id: "route-howrah-digha",
-    name: "Howrah to Digha",
-    code: "Coastal Express",
-    baseFare: 95,
+    _id: "route-howrah-digha",
+    routeName: "Howrah to Digha",
+    startLocation: "Howrah Terminus",
+    endLocation: "Digha",
+    stopIds: routeHowrahDighaStops.map((stop) => stop._id),
+    distance: 226,
+    basePrice: 95,
     perKmFare: 5.8,
-    stops: [
-      { id: "howrah-terminus", name: "Howrah Terminus", kmFromStart: 0, region: "Howrah" },
-      { id: "santragachi", name: "Santragachi", kmFromStart: 11, region: "Howrah" },
-      { id: "uluberia-digha", name: "Uluberia", kmFromStart: 36, region: "Howrah" },
-      { id: "kolaghat-digha", name: "Kolaghat", kmFromStart: 82, region: "Purba Medinipur" },
-      { id: "nandakumar-digha", name: "Nandakumar", kmFromStart: 131, region: "Purba Medinipur" },
-      { id: "contai", name: "Contai", kmFromStart: 187, region: "Purba Medinipur" },
-      { id: "digha", name: "Digha", kmFromStart: 226, region: "East Midnapore" }
-    ],
+    code: "Coastal Express",
     slots: [
       { id: "slot-0800", time: "8:00 AM", arrival: "12:00 PM", capacityUsed: 33, busNumber: "WB-34C-1021" },
       { id: "slot-1130", time: "11:30 AM", arrival: "3:25 PM", capacityUsed: 57, busNumber: "WB-34C-2877" },
@@ -46,124 +241,125 @@ export const routes = [
   }
 ];
 
-export const users = [
-  {
-    id: "user-001",
-    phoneNumber: "9883773485",
-    name: "Subhadeep",
-    email: "subhadeep@example.com",
-    usage: "Business",
-    language: "English",
-    walletBalance: 1240,
-    gstNumber: "19ABCDE1234F1Z5",
-    savedRouteIds: ["route-kolkata-haldia"],
-    savedStopIds: ["kolaghat", "haldia-depot"]
-  }
-];
+export const seedStops = [...routeKolkataHaldiaStops, ...routeHowrahDighaStops];
 
-export const drivers = [
+export const seedBuses = [
   {
-    id: "driver-001",
-    phoneNumber: "9123456789",
-    name: "Arindam Saha",
-    badgeNumber: "DRV-1208",
-    role: "Driver",
-    status: "Assigned",
-    rating: 4.9
-  },
-  {
-    id: "driver-002",
-    phoneNumber: "9234567890",
-    name: "Priya Mondal",
-    badgeNumber: "DRV-2084",
-    role: "Conductor",
-    status: "Available",
-    rating: 4.7
-  }
-];
-
-export const buses = [
-  {
-    id: "bus-001",
+    _id: "bus-001",
     busNumber: "WB-19B-3158",
-    capacityKg: 4200,
+    driverId: "driver-001",
+    capacityTotal: 4200,
+    capacityAvailable: 3980,
     routeId: "route-kolkata-haldia",
-    status: "Assigned"
+    currentLocation: { lat: 22.4267, lng: 87.8652 },
+    status: "running",
+    currentStopId: "stop-kolaghat",
+    nextStopId: "stop-mecheda",
+    startedAt: "2026-03-20T12:05:00.000Z",
+    completedAt: null
   },
   {
-    id: "bus-002",
+    _id: "bus-002",
     busNumber: "WB-34C-2877",
-    capacityKg: 3900,
+    driverId: "driver-002",
+    capacityTotal: 3900,
+    capacityAvailable: 3900,
     routeId: "route-howrah-digha",
-    status: "Idle"
+    currentLocation: { lat: 22.5839, lng: 88.2843 },
+    status: "idle",
+    currentStopId: null,
+    nextStopId: null,
+    startedAt: null,
+    completedAt: null
   }
 ];
 
-export const bookings = [
+export const seedBookings = [
   {
-    id: "BK-240301",
+    _id: "booking-240301",
     userId: "user-001",
-    routeId: "route-kolkata-haldia",
-    pickupStopId: "kolkata-gate",
-    dropStopId: "haldia-depot",
-    slotId: "slot-1200",
-    packageType: "Electronics",
-    weightKg: 18,
-    quantity: 2,
-    fragile: true,
-    express: false,
-    fare: 629,
-    paymentMethod: "UPI",
-    status: "In Transit",
-    createdAt: "2026-03-20T09:30:00.000Z",
-    tracking: [
-      { status: "Booked", time: "2026-03-20T09:30:00.000Z" },
-      { status: "Loaded", time: "2026-03-20T11:45:00.000Z" },
-      { status: "In Transit", time: "2026-03-20T12:25:00.000Z" }
-    ]
-  }
-];
-
-export const tripAssignments = [
-  {
-    id: "trip-001",
-    driverId: "driver-001",
     busId: "bus-001",
     routeId: "route-kolkata-haldia",
+    pickupStopId: "stop-kolkata-gate",
+    dropStopId: "stop-haldia-depot",
+    weight: 18,
+    quantity: 2,
+    price: 629,
+    packageType: "Electronics",
+    fragile: true,
+    express: false,
+    paymentMethod: "UPI",
     slotId: "slot-1200",
-    bookingIds: ["BK-240301"],
-    status: "Active",
-    startedAt: "2026-03-20T12:05:00.000Z",
-    currentStopId: "kolaghat",
-    nextStopId: "mecheda"
+    status: "in_transit",
+    createdAt: "2026-03-20T09:30:00.000Z",
+    tracking: [
+      { status: "booked", message: "Booking created", time: "2026-03-20T09:30:00.000Z" },
+      { status: "loaded", message: "Package loaded on bus", time: "2026-03-20T11:45:00.000Z" },
+      { status: "in_transit", message: "Bus departed Kolaghat", time: "2026-03-20T12:25:00.000Z" }
+    ]
   }
 ];
 
-export const liveTripLocations = new Map([
-  [
-    "trip-001",
-    {
-      tripId: "trip-001",
-      driverId: "driver-001",
-      lat: 22.4267,
-      lng: 87.8652,
-      speed: 42,
-      heading: 118,
-      label: "Near Kolaghat bridge",
-      updatedAt: "2026-03-20T12:40:00.000Z"
-    }
-  ]
-]);
+export const seedPayments = [
+  {
+    _id: "payment-240301",
+    bookingId: "booking-240301",
+    userId: "user-001",
+    amount: 629,
+    method: "UPI",
+    status: "success",
+    transactionId: "TXN240301UPI",
+    createdAt: "2026-03-20T09:31:00.000Z"
+  }
+];
 
-export const liveTripEvents = new Map([
-  [
-    "trip-001",
-    [
-      { type: "trip.started", message: "Trip started from Kolkata Gate", time: "2026-03-20T12:05:00.000Z" },
-      { type: "stop.departed", message: "Departed Kolaghat", time: "2026-03-20T12:31:00.000Z" }
-    ]
-  ]
-]);
+export const seedReviews = [
+  {
+    _id: "review-240301",
+    bookingId: "booking-240301",
+    reviewerId: "user-001",
+    targetId: "driver-001",
+    rating: 5,
+    comment: "Cargo reached on time and was handled carefully.",
+    createdAt: "2026-03-21T10:15:00.000Z"
+  }
+];
 
-export const otpSessions = new Map();
-export const refreshSessions = new Map();
+export const seedLiveLocations = [
+  {
+    _id: "live-bus-001",
+    busId: "bus-001",
+    lat: 22.4267,
+    lng: 87.8652,
+    speed: 42,
+    heading: 118,
+    label: "Near Kolaghat bridge",
+    updatedAt: "2026-03-20T12:40:00.000Z"
+  }
+];
+
+export const seedWarehouses = [
+  {
+    _id: "warehouse-stop-kolaghat",
+    stopId: "stop-kolaghat",
+    capacity: 1200,
+    currentLoad: 240
+  },
+  {
+    _id: "warehouse-stop-haldia-depot",
+    stopId: "stop-haldia-depot",
+    capacity: 2400,
+    currentLoad: 520
+  }
+];
+
+export const seedSubscriptions = [
+  {
+    _id: "subscription-001",
+    userId: "user-001",
+    routeId: "route-kolkata-haldia",
+    validFrom: "2026-03-01T00:00:00.000Z",
+    validTo: "2026-03-31T23:59:59.000Z",
+    type: "monthly"
+  }
+];

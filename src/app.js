@@ -2,13 +2,17 @@ import cors from "cors";
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
-import { routes } from "./data.js";
+import { config } from "./config.js";
+import { clearRefreshCookie, parseCookies, setRefreshCookie } from "./http/cookies.js";
 import { requireAuth } from "./middleware/auth.js";
 import { broadcastTripEvent, broadcastTripUpdate } from "./realtime.js";
 import {
   getIdentityFromAccessToken,
+  listSessions,
   logout,
+  logoutAllSessions,
   refreshAccessToken,
+  revokeSessionById,
   resendOtp,
   sendOtp,
   serializeAuthIdentity,
@@ -17,15 +21,15 @@ import {
 import {
   appendTripEvent,
   calculateFare,
-  createBus,
   createBadRequest,
   createBooking,
+  createBus,
   createDriver,
   createRoute,
+  getAdminSummary,
   getAllBuses,
   getAllDrivers,
   getAllRoutes,
-  getAdminSummary,
   getBookingById,
   getBookingsForUser,
   getDriverAssignment,
@@ -45,7 +49,19 @@ const __dirname = path.dirname(__filename);
 export function createApp(io) {
   const app = express();
 
-  app.use(cors());
+  app.set("trust proxy", 1);
+  app.use(
+    cors({
+      origin(origin, callback) {
+        if (!origin || config.allowedOrigins === "*" || config.allowedOrigins.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error("Origin not allowed by CORS"));
+      },
+      credentials: true
+    })
+  );
   app.use(express.json());
   app.use(express.static(path.resolve(__dirname, "../public")));
 
@@ -57,221 +73,149 @@ export function createApp(io) {
     res.sendFile(path.resolve(__dirname, "../public/admin/index.html"));
   });
 
-  app.post("/api/auth/send-otp", (req, res, next) => handleSendOtp(req, res, next, "customer"));
-  app.post("/api/auth/resend-otp", (req, res, next) => handleResendOtp(req, res, next, "customer"));
-  app.post("/api/auth/verify-otp", (req, res, next) => handleVerifyOtp(req, res, next, "customer"));
-  app.post("/api/auth/refresh", (req, res, next) => handleRefresh(req, res, next, "customer"));
-  app.post("/api/auth/logout", (req, res, next) => handleLogout(req, res, next, "customer"));
-  app.get("/api/auth/me", requireAuth("customer"), (req, res) => {
-    res.json({ data: serializeAuthIdentity(req.auth) });
-  });
+  registerAuthRoutes(app, "", "customer");
+  registerAuthRoutes(app, "/driver", "driver");
+  registerAuthRoutes(app, "/admin", "admin");
 
-  app.post("/api/driver/auth/send-otp", (req, res, next) => handleSendOtp(req, res, next, "driver"));
-  app.post("/api/driver/auth/resend-otp", (req, res, next) => handleResendOtp(req, res, next, "driver"));
-  app.post("/api/driver/auth/verify-otp", (req, res, next) => handleVerifyOtp(req, res, next, "driver"));
-  app.post("/api/driver/auth/refresh", (req, res, next) => handleRefresh(req, res, next, "driver"));
-  app.post("/api/driver/auth/logout", (req, res, next) => handleLogout(req, res, next, "driver"));
-  app.get("/api/driver/auth/me", requireAuth("driver"), (req, res) => {
-    res.json({ data: serializeAuthIdentity(req.auth) });
-  });
+  app.get("/api/routes", asyncHandler(async (_req, res) => {
+    res.json({ data: (await getAllRoutes()).map(sanitizeRoute) });
+  }));
 
-  app.get("/api/routes", (_req, res) => {
-    res.json({ data: routes.map(sanitizeRoute) });
-  });
-
-  app.get("/api/routes/:routeId", (req, res, next) => {
-    try {
-      const route = getRouteById(req.params.routeId);
-      if (!route) {
-        throw createBadRequest("Route not found.");
-      }
-      res.json({ data: sanitizeRoute(route) });
-    } catch (error) {
-      next(error);
+  app.get("/api/routes/:routeId", asyncHandler(async (req, res) => {
+    const route = await getRouteById(req.params.routeId);
+    if (!route) {
+      throw createBadRequest("Route not found.");
     }
-  });
+    res.json({ data: sanitizeRoute(route) });
+  }));
 
-  app.get("/api/driver/:driverId/assignment", (req, res, next) => {
-    try {
-      res.json({ data: getDriverAssignment(req.params.driverId) });
-    } catch (error) {
-      next(error);
+  app.get("/api/driver/:driverId/assignment", asyncHandler(async (req, res) => {
+    res.json({ data: await getDriverAssignment(req.params.driverId) });
+  }));
+
+  app.get("/api/trips/:tripId", asyncHandler(async (req, res) => {
+    res.json({ data: await getTripTracking(req.params.tripId) });
+  }));
+
+  app.post("/api/trips/:tripId/status", asyncHandler(async (req, res) => {
+    const trip = await updateTripStatus(req.params.tripId, req.body.status);
+    if (trip.liveLocation) {
+      broadcastTripUpdate(io, trip.id, trip.liveLocation);
     }
-  });
+    broadcastTripEvent(io, trip.id, {
+      type: "trip.status",
+      message: `Trip marked as ${trip.status}`,
+      time: new Date().toISOString()
+    });
+    res.json({ message: "Trip status updated.", data: trip });
+  }));
 
-  app.get("/api/trips/:tripId", (req, res, next) => {
-    try {
-      res.json({ data: getTripTracking(req.params.tripId) });
-    } catch (error) {
-      next(error);
+  app.post("/api/trips/:tripId/stops", asyncHandler(async (req, res) => {
+    const trip = await updateTripStop({
+      tripId: req.params.tripId,
+      currentStopId: req.body.currentStopId,
+      nextStopId: req.body.nextStopId,
+      message: req.body.message
+    });
+    broadcastTripEvent(io, trip.id, {
+      type: "stop.update",
+      message: req.body.message ?? "Stop progress updated",
+      time: new Date().toISOString()
+    });
+    res.json({ message: "Trip stop updated.", data: trip });
+  }));
+
+  app.post("/api/trips/:tripId/location", asyncHandler(async (req, res) => {
+    const location = await updateTripLocation({
+      tripId: req.params.tripId,
+      driverId: req.body.driverId,
+      lat: req.body.lat,
+      lng: req.body.lng,
+      speed: req.body.speed,
+      heading: req.body.heading,
+      label: req.body.label
+    });
+    await appendTripEvent(req.params.tripId, {
+      type: "location.update",
+      message: `Location updated at ${location.label}`,
+      time: location.updatedAt
+    });
+    broadcastTripUpdate(io, req.params.tripId, location);
+    res.json({ message: "Trip location updated.", data: location });
+  }));
+
+  app.use("/api/admin", requireAuth("admin"));
+
+  app.get("/api/admin/summary", asyncHandler(async (_req, res) => {
+    res.json({ data: await getAdminSummary() });
+  }));
+
+  app.get("/api/admin/routes", asyncHandler(async (_req, res) => {
+    res.json({ data: await getAllRoutes() });
+  }));
+
+  app.post("/api/admin/routes", asyncHandler(async (req, res) => {
+    res.status(201).json({
+      message: "Route created successfully.",
+      data: await createRoute(req.body)
+    });
+  }));
+
+  app.get("/api/admin/buses", asyncHandler(async (_req, res) => {
+    res.json({ data: await getAllBuses() });
+  }));
+
+  app.post("/api/admin/buses", asyncHandler(async (req, res) => {
+    res.status(201).json({
+      message: "Bus created successfully.",
+      data: await createBus(req.body)
+    });
+  }));
+
+  app.get("/api/admin/drivers", asyncHandler(async (_req, res) => {
+    res.json({ data: await getAllDrivers() });
+  }));
+
+  app.post("/api/admin/drivers", asyncHandler(async (req, res) => {
+    res.status(201).json({
+      message: "Driver created successfully.",
+      data: await createDriver(req.body)
+    });
+  }));
+
+  app.patch("/api/admin/bookings/:bookingId/status", asyncHandler(async (req, res) => {
+    res.json({
+      message: "Booking status updated successfully.",
+      data: await updateBookingStatus(req.params.bookingId, req.body.status)
+    });
+  }));
+
+  app.get("/api/users/:userId/profile", asyncHandler(async (req, res) => {
+    const user = await getUserById(req.params.userId);
+    if (!user) {
+      throw createBadRequest("User not found.");
     }
-  });
+    res.json({ data: user });
+  }));
 
-  app.post("/api/trips/:tripId/status", (req, res, next) => {
-    try {
-      const trip = updateTripStatus(req.params.tripId, req.body.status);
-      if (trip.liveLocation) {
-        broadcastTripUpdate(io, trip.id, trip.liveLocation);
-      }
-      broadcastTripEvent(io, trip.id, {
-        type: "trip.status",
-        message: `Trip marked as ${trip.status}`,
-        time: new Date().toISOString()
-      });
-      res.json({ message: "Trip status updated.", data: trip });
-    } catch (error) {
-      next(error);
+  app.post("/api/fare/quote", asyncHandler(async (req, res) => {
+    const {
+      routeId,
+      pickupStopId,
+      dropStopId,
+      weightKg = 1,
+      quantity = 1,
+      fragile = false,
+      express = false
+    } = req.body;
+
+    const route = await getRouteById(routeId);
+    if (!route) {
+      throw createBadRequest("Route not found.");
     }
-  });
 
-  app.post("/api/trips/:tripId/stops", (req, res, next) => {
-    try {
-      const trip = updateTripStop({
-        tripId: req.params.tripId,
-        currentStopId: req.body.currentStopId,
-        nextStopId: req.body.nextStopId,
-        message: req.body.message
-      });
-      broadcastTripEvent(io, trip.id, {
-        type: "stop.update",
-        message: req.body.message ?? "Stop progress updated",
-        time: new Date().toISOString()
-      });
-      res.json({ message: "Trip stop updated.", data: trip });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/trips/:tripId/location", (req, res, next) => {
-    try {
-      const location = updateTripLocation({
-        tripId: req.params.tripId,
-        driverId: req.body.driverId,
-        lat: req.body.lat,
-        lng: req.body.lng,
-        speed: req.body.speed,
-        heading: req.body.heading,
-        label: req.body.label
-      });
-      appendTripEvent(req.params.tripId, {
-        type: "location.update",
-        message: `Location updated at ${location.label}`,
-        time: location.updatedAt
-      });
-      broadcastTripUpdate(io, req.params.tripId, location);
-      res.json({ message: "Trip location updated.", data: location });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/admin/summary", (_req, res, next) => {
-    try {
-      res.json({ data: getAdminSummary() });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/admin/routes", (_req, res, next) => {
-    try {
-      res.json({ data: getAllRoutes() });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/admin/routes", (req, res, next) => {
-    try {
-      res.status(201).json({
-        message: "Route created successfully.",
-        data: createRoute(req.body)
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/admin/buses", (_req, res, next) => {
-    try {
-      res.json({ data: getAllBuses() });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/admin/buses", (req, res, next) => {
-    try {
-      res.status(201).json({
-        message: "Bus created successfully.",
-        data: createBus(req.body)
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/admin/drivers", (_req, res, next) => {
-    try {
-      res.json({ data: getAllDrivers() });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/admin/drivers", (req, res, next) => {
-    try {
-      res.status(201).json({
-        message: "Driver created successfully.",
-        data: createDriver(req.body)
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.patch("/api/admin/bookings/:bookingId/status", (req, res, next) => {
-    try {
-      res.json({
-        message: "Booking status updated successfully.",
-        data: updateBookingStatus(req.params.bookingId, req.body.status)
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/users/:userId/profile", (req, res, next) => {
-    try {
-      const user = getUserById(req.params.userId);
-      if (!user) {
-        throw createBadRequest("User not found.");
-      }
-      res.json({ data: user });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.post("/api/fare/quote", (req, res, next) => {
-    try {
-      const {
-        routeId,
-        pickupStopId,
-        dropStopId,
-        weightKg = 1,
-        quantity = 1,
-        fragile = false,
-        express = false
-      } = req.body;
-
-      const route = getRouteById(routeId);
-      if (!route) {
-        throw createBadRequest("Route not found.");
-      }
-
-      const quote = calculateFare({
+    res.json({
+      data: calculateFare({
         route,
         pickupStopId,
         dropStopId,
@@ -279,100 +223,72 @@ export function createApp(io) {
         quantity,
         fragile,
         express
-      });
+      })
+    });
+  }));
 
-      res.json({ data: quote });
-    } catch (error) {
-      next(error);
+  app.get("/api/routes/:routeId/slots", asyncHandler(async (req, res) => {
+    const route = await getRouteById(req.params.routeId);
+    if (!route) {
+      throw createBadRequest("Route not found.");
     }
-  });
+    res.json({ data: route.slots });
+  }));
 
-  app.get("/api/routes/:routeId/slots", (req, res, next) => {
-    try {
-      const route = getRouteById(req.params.routeId);
-      if (!route) {
-        throw createBadRequest("Route not found.");
+  app.post("/api/bookings", asyncHandler(async (req, res) => {
+    const booking = await createBooking(req.body);
+    res.status(201).json({
+      message: "Booking created successfully.",
+      data: booking
+    });
+  }));
+
+  app.get("/api/users/:userId/bookings", asyncHandler(async (req, res) => {
+    res.json({ data: await getBookingsForUser(req.params.userId) });
+  }));
+
+  app.get("/api/bookings/:bookingId", asyncHandler(async (req, res) => {
+    const booking = await getBookingById(req.params.bookingId);
+    if (!booking) {
+      throw createBadRequest("Booking not found.");
+    }
+    res.json({ data: booking });
+  }));
+
+  app.get("/api/bookings/:bookingId/tracking", asyncHandler(async (req, res) => {
+    const booking = await getBookingById(req.params.bookingId);
+    if (!booking) {
+      throw createBadRequest("Booking not found.");
+    }
+
+    const trip = booking.id === "BK-240301" ? await getTripTracking("trip-001") : null;
+
+    res.json({
+      data: {
+        bookingId: booking.id,
+        currentStatus: booking.status,
+        route: booking.route,
+        busNumber: booking.slot?.busNumber ?? null,
+        eta: booking.slot?.arrival ?? null,
+        timeline: booking.tracking,
+        liveLocation: trip?.liveLocation ?? null
       }
-      res.json({ data: route.slots });
-    } catch (error) {
-      next(error);
-    }
-  });
+    });
+  }));
 
-  app.post("/api/bookings", (req, res, next) => {
-    try {
-      const booking = createBooking(req.body);
-      res.status(201).json({
-        message: "Booking created successfully.",
-        data: booking
-      });
-    } catch (error) {
-      next(error);
+  app.get("/api/users/:userId/wallet", asyncHandler(async (req, res) => {
+    const user = await getUserById(req.params.userId);
+    if (!user) {
+      throw createBadRequest("User not found.");
     }
-  });
-
-  app.get("/api/users/:userId/bookings", (req, res, next) => {
-    try {
-      res.json({ data: getBookingsForUser(req.params.userId) });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/bookings/:bookingId", (req, res, next) => {
-    try {
-      const booking = getBookingById(req.params.bookingId);
-      if (!booking) {
-        throw createBadRequest("Booking not found.");
+    res.json({
+      data: {
+        userId: user.id,
+        balance: user.walletBalance,
+        paymentOptions: ["UPI", "Wallet", "Cash at pickup"]
       }
-      res.json({ data: booking });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/bookings/:bookingId/tracking", (req, res, next) => {
-    try {
-      const booking = getBookingById(req.params.bookingId);
-      if (!booking) {
-        throw createBadRequest("Booking not found.");
-      }
-
-      const trip = booking.id === "BK-240301" ? getTripTracking("trip-001") : null;
-
-      res.json({
-        data: {
-          bookingId: booking.id,
-          currentStatus: booking.status,
-          route: booking.route,
-          busNumber: booking.slot?.busNumber ?? null,
-          eta: booking.slot?.arrival ?? null,
-          timeline: booking.tracking,
-          liveLocation: trip?.liveLocation ?? null
-        }
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  app.get("/api/users/:userId/wallet", (req, res, next) => {
-    try {
-      const user = getUserById(req.params.userId);
-      if (!user) {
-        throw createBadRequest("User not found.");
-      }
-      res.json({
-        data: {
-          userId: user.id,
-          balance: user.walletBalance,
-          paymentOptions: ["UPI", "Wallet", "Cash at pickup"]
-        }
-      });
-    } catch (error) {
-      next(error);
-    }
-  });
+    });
+  }));
 
   app.use((error, _req, res, _next) => {
     const statusCode = error.statusCode ?? 500;
@@ -386,88 +302,155 @@ export function createApp(io) {
   return app;
 }
 
-function handleSendOtp(req, res, next, role) {
-  try {
-    const { phoneNumber } = req.body;
-    if (!phoneNumber) {
-      throw createBadRequest("phoneNumber is required.");
+function asyncHandler(handler) {
+  return async (req, res, next) => {
+    try {
+      await handler(req, res, next);
+    } catch (error) {
+      next(error);
     }
-
-    res.json({
-      message: "OTP sent successfully.",
-      data: sendOtp({ phoneNumber, role })
-    });
-  } catch (error) {
-    next(error);
-  }
+  };
 }
 
-function handleResendOtp(req, res, next, role) {
-  try {
-    const { sessionId } = req.body;
-    if (!sessionId) {
-      throw createBadRequest("sessionId is required.");
-    }
-
-    res.json({
-      message: "OTP resent successfully.",
-      data: resendOtp({ sessionId, role })
-    });
-  } catch (error) {
-    next(error);
+async function handleSendOtp(req, res, role) {
+  const { phoneNumber } = req.body;
+  if (!phoneNumber) {
+    throw createBadRequest("phoneNumber is required.");
   }
+
+  res.json({
+    message: "OTP sent successfully.",
+    data: await sendOtp({ phoneNumber, role })
+  });
 }
 
-function handleVerifyOtp(req, res, next, role) {
-  try {
-    const { sessionId, otp } = req.body;
-    if (!sessionId || !otp) {
-      throw createBadRequest("sessionId and otp are required.");
-    }
-
-    const auth = verifyOtp({ sessionId, otp, role });
-    const me = getIdentityFromAccessToken(auth.accessToken);
-
-    res.json({
-      message: "OTP verified successfully.",
-      data: {
-        ...auth,
-        ...serializeAuthIdentity(me)
-      }
-    });
-  } catch (error) {
-    next(error);
+async function handleResendOtp(req, res, role) {
+  const { sessionId } = req.body;
+  if (!sessionId) {
+    throw createBadRequest("sessionId is required.");
   }
+
+  res.json({
+    message: "OTP resent successfully.",
+    data: await resendOtp({ sessionId, role })
+  });
 }
 
-function handleRefresh(req, res, next, role) {
-  try {
-    const { refreshToken } = req.body;
-    if (!refreshToken) {
-      throw createBadRequest("refreshToken is required.");
-    }
-
-    res.json({
-      message: "Access token refreshed successfully.",
-      data: refreshAccessToken({ refreshToken, role })
-    });
-  } catch (error) {
-    next(error);
+async function handleVerifyOtp(req, res, role) {
+  const { sessionId, otp } = req.body;
+  if (!sessionId || !otp) {
+    throw createBadRequest("sessionId and otp are required.");
   }
+
+  const auth = await verifyOtp({ sessionId, otp, role, meta: requestMeta(req) });
+  setRefreshCookie(res, auth.refreshToken);
+  const me = await getIdentityFromAccessToken(auth.accessToken);
+
+  res.json({
+    message: "OTP verified successfully.",
+    data: {
+      ...auth,
+      ...serializeAuthIdentity(me)
+    }
+  });
 }
 
-function handleLogout(req, res, next, role) {
-  try {
-    const { refreshToken } = req.body;
-    if (!refreshToken) {
-      throw createBadRequest("refreshToken is required.");
-    }
-
-    res.json({
-      message: "Logged out successfully.",
-      data: logout({ refreshToken, role })
-    });
-  } catch (error) {
-    next(error);
+async function handleRefresh(req, res, role) {
+  const refreshToken = getRefreshToken(req);
+  if (!refreshToken) {
+    throw createBadRequest("refreshToken is required.");
   }
+
+  const data = await refreshAccessToken({ refreshToken, role, meta: requestMeta(req) });
+  setRefreshCookie(res, data.refreshToken);
+  res.json({
+    message: "Access token refreshed successfully.",
+    data
+  });
+}
+
+async function handleLogout(req, res, role) {
+  const refreshToken = getRefreshToken(req);
+  if (!refreshToken) {
+    throw createBadRequest("refreshToken is required.");
+  }
+
+  clearRefreshCookie(res);
+  res.json({
+    message: "Logged out successfully.",
+    data: await logout({ refreshToken, role })
+  });
+}
+
+async function handleListSessions(req, res) {
+  res.json({
+    data: await listSessions({
+      userId: req.auth.identity.id,
+      role: req.auth.role,
+      currentSessionId: req.auth.tokenPayload.sid ?? null
+    })
+  });
+}
+
+async function handleRevokeSession(req, res) {
+  const { sessionId } = req.params;
+  const currentSessionId = req.auth.tokenPayload.sid ?? null;
+
+  await revokeSessionById({
+    sessionId,
+    userId: req.auth.identity.id,
+    role: req.auth.role
+  });
+
+  if (sessionId === currentSessionId) {
+    clearRefreshCookie(res);
+  }
+
+  res.json({ message: "Session revoked.", data: { ok: true } });
+}
+
+async function handleLogoutAllSessions(req, res) {
+  await logoutAllSessions({
+    userId: req.auth.identity.id,
+    role: req.auth.role,
+    exceptSessionId: req.auth.tokenPayload.sid ?? null
+  });
+
+  res.json({ message: "Other sessions logged out.", data: { ok: true } });
+}
+
+function requestMeta(req) {
+  return {
+    ipAddress: req.ip,
+    userAgent: req.get("user-agent") ?? null
+  };
+}
+
+function getRefreshToken(req) {
+  if (req.body?.refreshToken) {
+    return req.body.refreshToken;
+  }
+
+  const cookies = parseCookies(req);
+  return cookies[config.refreshCookieName] ?? null;
+}
+
+function registerAuthRoutes(app, prefix, role) {
+  const base = `/api${prefix}/auth`;
+
+  app.post(`${base}/send-otp`, asyncHandler((req, res) => handleSendOtp(req, res, role)));
+  app.post(`${base}/resend-otp`, asyncHandler((req, res) => handleResendOtp(req, res, role)));
+  app.post(`${base}/verify-otp`, asyncHandler((req, res) => handleVerifyOtp(req, res, role)));
+  app.post(`${base}/refresh`, asyncHandler((req, res) => handleRefresh(req, res, role)));
+  app.post(`${base}/logout`, asyncHandler((req, res) => handleLogout(req, res, role)));
+  app.post(`${base}/logout-all`, requireAuth(role), asyncHandler(handleLogoutAllSessions));
+  app.get(
+    `${base}/me`,
+    requireAuth(role),
+    asyncHandler(async (req, res) => {
+      res.json({ data: serializeAuthIdentity(req.auth) });
+    })
+  );
+  app.get(`${base}/sessions`, requireAuth(role), asyncHandler(handleListSessions));
+  app.delete(`${base}/sessions/:sessionId`, requireAuth(role), asyncHandler(handleRevokeSession));
 }

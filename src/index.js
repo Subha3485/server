@@ -1,16 +1,19 @@
 import { createServer } from "http";
 import { createApp } from "./app.js";
+import { initializeDatabase } from "./bootstrap.js";
+import { config } from "./config.js";
 import { createRealtimeServer } from "./realtime.js";
 
-const PORT = process.env.PORT || 4000;
+await initializeDatabase();
+
 const httpServer = createServer();
 const io = createRealtimeServer(httpServer);
 const app = createApp(io);
 
 httpServer.on("request", app);
 
-httpServer.listen(PORT, () => {
-  console.log(`Bus Logistics API running on http://localhost:${PORT}`);
-  console.log(`Admin panel available at http://localhost:${PORT}/admin`);
-  console.log(`Realtime socket available at ws://localhost:${PORT}`);
+httpServer.listen(config.port, config.host, () => {
+  console.log(`Bus Logistics API running on ${config.publicBaseUrl}`);
+  console.log(`Admin panel available at ${config.publicBaseUrl}/admin`);
+  console.log(`Realtime socket available from ${config.publicBaseUrl}`);
 });

@@ -1,6 +1,6 @@
 # Bus Logistics Server
 
-Node.js API for the Flutter bus-logistics prototype.
+Node.js API for the Bus Logistics apps, backed by MongoDB.
 
 ## Product Docs
 
@@ -16,6 +16,57 @@ npm run dev
 
 Default port: `4000`
 
+For production-style local config, copy `.env.example` to `.env` and set:
+
+- `PORT`
+- `HOST`
+- `PUBLIC_BASE_URL`
+- `MONGODB_URI`
+- `MONGODB_DB_NAME`
+- `JWT_ACCESS_SECRET`
+- `JWT_REFRESH_SECRET`
+- `JWT_ISSUER`
+- `ACCESS_TOKEN_TTL`
+- `REFRESH_TOKEN_TTL`
+- `REFRESH_COOKIE_NAME`
+- `COOKIE_SECURE`
+- `COOKIE_SAMESITE`
+- `COOKIE_DOMAIN`
+- `OTP_PROVIDER`
+- `OTP_FROM`
+- `OTP_FIXED_CODE`
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_VERIFY_SERVICE_SID`
+- `FAST2SMS_API_KEY`
+- `FAST2SMS_ROUTE`
+- `MSG91_AUTH_KEY`
+- `MSG91_TEMPLATE_ID`
+- `MSG91_SENDER_ID`
+- `ALLOWED_ORIGINS`
+
+## Current Data Model
+
+Primary collections:
+
+- `users`
+- `buses`
+- `routes`
+- `stops`
+- `bookings`
+- `payments`
+- `reviews`
+- `live_locations`
+- `warehouses`
+- `subscriptions`
+
+Auth/session collections:
+
+- `otp_sessions`
+- `auth_sessions`
+
+Schema diagram: [docs/database-schema.md](./docs/database-schema.md)
+
 ## Main Endpoints
 
 - `GET /health`
@@ -28,13 +79,28 @@ Default port: `4000`
 - `POST /api/auth/verify-otp`
 - `POST /api/auth/refresh`
 - `POST /api/auth/logout`
+- `POST /api/auth/logout-all`
 - `GET /api/auth/me`
+- `GET /api/auth/sessions`
+- `DELETE /api/auth/sessions/:sessionId`
 - `POST /api/driver/auth/send-otp`
 - `POST /api/driver/auth/resend-otp`
 - `POST /api/driver/auth/verify-otp`
 - `POST /api/driver/auth/refresh`
 - `POST /api/driver/auth/logout`
+- `POST /api/driver/auth/logout-all`
 - `GET /api/driver/auth/me`
+- `GET /api/driver/auth/sessions`
+- `DELETE /api/driver/auth/sessions/:sessionId`
+- `POST /api/admin/auth/send-otp`
+- `POST /api/admin/auth/resend-otp`
+- `POST /api/admin/auth/verify-otp`
+- `POST /api/admin/auth/refresh`
+- `POST /api/admin/auth/logout`
+- `POST /api/admin/auth/logout-all`
+- `GET /api/admin/auth/me`
+- `GET /api/admin/auth/sessions`
+- `DELETE /api/admin/auth/sessions/:sessionId`
 - `GET /api/driver/:driverId/assignment`
 - `GET /api/trips/:tripId`
 - `POST /api/trips/:tripId/status`
@@ -93,8 +159,12 @@ curl -X POST http://localhost:4000/api/bookings \
 
 ## Notes
 
-- Data is mock and stored in memory.
-- OTP is mocked as `123456`.
-- Access and refresh tokens are mock in-memory sessions for local development.
+- The server seeds the demo dataset into MongoDB on first start.
+- Admin APIs now require an admin JWT access token.
+- Refresh tokens can be supplied by body or the HTTP-only refresh cookie.
+- Session inventory and revocation endpoints are available for customer, driver, and admin auth flows.
+- OTP delivery is provider-driven through `OTP_PROVIDER` with support for `mock`, `twilio`, `fast2sms`, and `msg91`.
+- If `OTP_PROVIDER=mock`, the response may include `otpPreview` for local testing.
+- Access tokens are now signed JWTs and refresh tokens are rotated against hashed MongoDB-backed auth sessions.
 - Realtime updates are available through Socket.IO on the same server port.
-- This is suitable for Flutter integration and flow development, not production deployment.
+- This is much closer to production than the previous demo flow, but production OTP templates, socket authorization, rate limiting, and audit logging are still pending.

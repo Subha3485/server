@@ -2,7 +2,7 @@ import { createBadRequest } from "../services/logistics.js";
 import { getIdentityFromAccessToken } from "../services/auth.js";
 
 export function requireAuth(role) {
-  return (req, _res, next) => {
+  return async (req, _res, next) => {
     try {
       const header = req.headers.authorization;
       if (!header?.startsWith("Bearer ")) {
@@ -10,7 +10,7 @@ export function requireAuth(role) {
       }
 
       const token = header.slice("Bearer ".length);
-      const auth = getIdentityFromAccessToken(token);
+      const auth = await getIdentityFromAccessToken(token);
       if (auth.role !== role) {
         throw createBadRequest("Token role mismatch.");
       }

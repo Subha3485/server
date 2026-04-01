@@ -1,172 +1,239 @@
 import crypto from "crypto";
-import { drivers, otpSessions, refreshSessions, users } from "../data.js";
-import { createBadRequest, getDriverById, getDriverByPhone, getUserById } from "./logistics.js";
+import jwt from "jsonwebtoken";
+import { config } from "../config.js";
+import { getCollections } from "../db.js";
+import { createBadRequest, getDriverById, getDriverByPhone, getUserById, getUserByPhone } from "./logistics.js";
+import { generateOtpCode, sendOtpCode } from "./otp_provider.js";
 
 const OTP_TTL_MS = 5 * 60 * 1000;
 const RESEND_COOLDOWN_MS = 30 * 1000;
-const ACCESS_TTL_MS = 15 * 60 * 1000;
-const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_ATTEMPTS = 5;
-const MOCK_OTP = "123456";
 
 export function maskPhoneNumber(phoneNumber) {
   if (!phoneNumber || phoneNumber.length < 4) return phoneNumber;
   return `${"*".repeat(Math.max(0, phoneNumber.length - 4))}${phoneNumber.slice(-4)}`;
 }
 
-export function sendOtp({ phoneNumber, role }) {
+export async function sendOtp({ phoneNumber, role }) {
   validateRole(role);
-  const identity = resolveIdentityByPhone({ phoneNumber, role });
-  const existing = findLatestOtpSession({ phoneNumber, role });
+  const identity = await resolveIdentityByPhone({ phoneNumber, role });
+  const existing = await findLatestOtpSession({ phone: phoneNumber, role });
 
-  if (existing && existing.status === "pending" && Date.now() - existing.createdAt < RESEND_COOLDOWN_MS) {
+  if (existing && existing.status === "pending" && Date.now() - new Date(existing.createdAt).getTime() < RESEND_COOLDOWN_MS) {
     throw createBadRequest("OTP resend is cooling down. Try again shortly.");
   }
 
+  const code = await generateOtpCode();
+  const delivery = await sendOtpCode({ phoneNumber, code });
+  const { otpSessions } = await getCollections();
+
   const sessionId = `otp-${crypto.randomUUID()}`;
-  const createdAt = Date.now();
+  const createdAt = new Date();
   const session = {
-    id: sessionId,
-    phoneNumber,
+    _id: sessionId,
+    phone: phoneNumber,
     role,
-    targetId: identity.id,
-    otpHash: hashValue(MOCK_OTP),
-    expiresAt: createdAt + OTP_TTL_MS,
-    resendAvailableAt: createdAt + RESEND_COOLDOWN_MS,
+    userId: identity.id,
+    otpHash: hashValue(code),
+    expiresAt: new Date(createdAt.getTime() + OTP_TTL_MS),
+    resendAvailableAt: new Date(createdAt.getTime() + RESEND_COOLDOWN_MS),
     attemptCount: 0,
     maxAttempts: MAX_ATTEMPTS,
     status: "pending",
+    provider: delivery.provider,
     createdAt
   };
 
-  otpSessions.set(sessionId, session);
+  await otpSessions.insertOne(session);
 
   return {
     sessionId,
     phoneNumber: maskPhoneNumber(phoneNumber),
     expiresInSeconds: Math.floor(OTP_TTL_MS / 1000),
     resendInSeconds: Math.floor(RESEND_COOLDOWN_MS / 1000),
-    otpPreview: MOCK_OTP
+    otpPreview: delivery.preview ?? undefined
   };
 }
 
-export function resendOtp({ sessionId, role }) {
-  const session = otpSessions.get(sessionId);
+export async function resendOtp({ sessionId, role }) {
+  const { otpSessions } = await getCollections();
+  const session = await otpSessions.findOne({ _id: sessionId });
   if (!session || session.role !== role) {
     throw createBadRequest("OTP session not found.");
   }
 
-  if (session.status !== "pending") {
-    throw createBadRequest("OTP session is no longer active.");
-  }
+  ensurePendingOtpSession(session);
 
-  if (session.expiresAt < Date.now()) {
-    session.status = "expired";
-    throw createBadRequest("OTP session expired.");
-  }
-
-  if (Date.now() < session.resendAvailableAt) {
+  if (Date.now() < new Date(session.resendAvailableAt).getTime()) {
     throw createBadRequest("OTP resend is cooling down. Try again shortly.");
   }
 
-  session.otpHash = hashValue(MOCK_OTP);
-  session.resendAvailableAt = Date.now() + RESEND_COOLDOWN_MS;
+  const code = await generateOtpCode();
+  const delivery = await sendOtpCode({ phoneNumber: session.phone, code });
+  const resendAvailableAt = new Date(Date.now() + RESEND_COOLDOWN_MS);
+
+  await otpSessions.updateOne(
+    { _id: sessionId },
+    {
+      $set: {
+        otpHash: hashValue(code),
+        provider: delivery.provider,
+        resendAvailableAt
+      }
+    }
+  );
 
   return {
-    sessionId: session.id,
-    phoneNumber: maskPhoneNumber(session.phoneNumber),
+    sessionId: session._id,
+    phoneNumber: maskPhoneNumber(session.phone),
     resendInSeconds: Math.floor(RESEND_COOLDOWN_MS / 1000),
-    otpPreview: MOCK_OTP
+    otpPreview: delivery.preview ?? undefined
   };
 }
 
-export function verifyOtp({ sessionId, otp, role }) {
-  const session = otpSessions.get(sessionId);
+export async function verifyOtp({ sessionId, otp, role, meta = {} }) {
+  const { otpSessions } = await getCollections();
+  const session = await otpSessions.findOne({ _id: sessionId });
   if (!session || session.role !== role) {
     throw createBadRequest("OTP session not found.");
   }
 
-  if (session.status !== "pending") {
-    throw createBadRequest("OTP session is no longer active.");
-  }
+  ensurePendingOtpSession(session);
 
-  if (session.expiresAt < Date.now()) {
-    session.status = "expired";
-    throw createBadRequest("OTP session expired.");
-  }
-
-  if (session.attemptCount >= session.maxAttempts) {
-    session.status = "locked";
-    throw createBadRequest("OTP attempts exceeded.");
-  }
-
-  session.attemptCount += 1;
+  const attemptCount = Number(session.attemptCount ?? 0) + 1;
   if (session.otpHash !== hashValue(otp)) {
-    if (session.attemptCount >= session.maxAttempts) {
-      session.status = "locked";
+    await otpSessions.updateOne(
+      { _id: sessionId },
+      { $set: { attemptCount, status: attemptCount >= MAX_ATTEMPTS ? "locked" : "pending" } }
+    );
+    if (attemptCount >= MAX_ATTEMPTS) {
+      throw createBadRequest("OTP attempts exceeded.");
     }
     throw createBadRequest("Invalid OTP.");
   }
 
-  session.status = "verified";
-  const identity = resolveIdentityById({ role, id: session.targetId });
-  return createTokenBundle({ role, identity });
+  await otpSessions.updateOne(
+    { _id: sessionId },
+    { $set: { attemptCount, status: "verified", verifiedAt: new Date() } }
+  );
+
+  const identity = await resolveIdentityById({ role, id: session.userId });
+  return createTokenBundle({ role, identity, meta });
 }
 
-export function refreshAccessToken({ refreshToken, role }) {
+export async function refreshAccessToken({ refreshToken, role, meta = {} }) {
   validateRole(role);
-  const session = findRefreshSession(refreshToken);
+  const decoded = verifyJwt(refreshToken, config.jwtRefreshSecret, "refresh");
+  const { authSessions } = await getCollections();
+  const session = await authSessions.findOne({ _id: decoded.sid });
+
   if (!session || session.role !== role) {
     throw createBadRequest("Refresh session not found.");
   }
 
-  if (session.revokedAt) {
-    throw createBadRequest("Refresh session revoked.");
+  assertActiveSession(session);
+
+  if (session.currentJti !== decoded.jti || session.refreshTokenHash !== hashValue(refreshToken)) {
+    await revokeSession(session._id, "Refresh token reuse detected.");
+    throw createBadRequest("Invalid refresh token.");
   }
 
-  if (session.expiresAt < Date.now()) {
-    session.revokedAt = Date.now();
-    throw createBadRequest("Refresh session expired.");
-  }
-
-  const identity = resolveIdentityById({ role, id: session.subjectId });
-  const accessToken = createAccessToken({ role, subjectId: identity.id });
-
-  return {
-    accessToken,
-    accessExpiresAt: new Date(Date.now() + ACCESS_TTL_MS).toISOString(),
-    refreshToken
-  };
+  const identity = await resolveIdentityById({ role, id: session.userId });
+  return rotateRefreshSession({ session, identity, meta });
 }
 
-export function logout({ refreshToken, role }) {
+export async function logout({ refreshToken, role }) {
   validateRole(role);
-  const session = findRefreshSession(refreshToken);
-  if (!session || session.role !== role) {
+  const decoded = verifyJwt(refreshToken, config.jwtRefreshSecret, "refresh");
+  const { authSessions } = await getCollections();
+  const session = await authSessions.findOne({ _id: decoded.sid, role });
+
+  if (!session) {
     throw createBadRequest("Refresh session not found.");
   }
 
-  session.revokedAt = Date.now();
+  await revokeSession(session._id, "User logged out.");
   return { ok: true };
 }
 
-export function getIdentityFromAccessToken(token) {
+export async function logoutAllSessions({ userId, role, exceptSessionId = null }) {
+  validateRole(role);
+  const { authSessions } = await getCollections();
+  const filter = {
+    userId,
+    role,
+    revokedAt: null
+  };
+
+  if (exceptSessionId) {
+    filter._id = { $ne: exceptSessionId };
+  }
+
+  await authSessions.updateMany(
+    filter,
+    {
+      $set: {
+        revokedAt: new Date(),
+        revokeReason: "Logged out from all devices."
+      }
+    }
+  );
+
+  return { ok: true };
+}
+
+export async function listSessions({ userId, role, currentSessionId = null }) {
+  validateRole(role);
+  const { authSessions } = await getCollections();
+  const sessions = await authSessions
+    .find({ userId, role })
+    .sort({ lastUsedAt: -1, issuedAt: -1 })
+    .project({
+      _id: 1,
+      issuedAt: 1,
+      expiresAt: 1,
+      revokedAt: 1,
+      revokeReason: 1,
+      userAgent: 1,
+      ipAddress: 1,
+      lastUsedAt: 1
+    })
+    .toArray();
+
+  return sessions.map((session) => ({
+    id: session._id,
+    issuedAt: session.issuedAt,
+    expiresAt: session.expiresAt,
+    revokedAt: session.revokedAt ?? null,
+    revokeReason: session.revokeReason ?? null,
+    userAgent: session.userAgent ?? null,
+    ipAddress: session.ipAddress ?? null,
+    lastUsedAt: session.lastUsedAt ?? null,
+    isCurrent: session._id === currentSessionId
+  }));
+}
+
+export async function revokeSessionById({ sessionId, userId, role }) {
+  validateRole(role);
+  const { authSessions } = await getCollections();
+  const session = await authSessions.findOne({ _id: sessionId, userId, role });
+
+  if (!session) {
+    throw createBadRequest("Session not found.");
+  }
+
+  await revokeSession(sessionId, "Revoked by user.");
+  return { ok: true };
+}
+
+export async function getIdentityFromAccessToken(token) {
   if (!token) {
     throw createBadRequest("Authorization token is required.");
   }
 
-  let payload;
-  try {
-    payload = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
-  } catch {
-    throw createBadRequest("Invalid access token.");
-  }
+  const payload = verifyJwt(token, config.jwtAccessSecret, "access");
+  const identity = await resolveIdentityById({ role: payload.role, id: payload.sub });
 
-  if (payload.exp < Date.now()) {
-    throw createBadRequest("Access token expired.");
-  }
-
-  const identity = resolveIdentityById({ role: payload.role, id: payload.sub });
   return {
     role: payload.role,
     identity,
@@ -176,82 +243,170 @@ export function getIdentityFromAccessToken(token) {
 
 export function serializeAuthIdentity({ role, identity }) {
   if (role === "customer") {
-    return {
-      role,
-      user: identity
-    };
+    return { role, user: identity };
   }
 
   if (role === "driver") {
-    return {
-      role,
-      driver: identity
-    };
+    return { role, driver: identity };
+  }
+
+  if (role === "admin") {
+    return { role, admin: identity };
   }
 
   throw createBadRequest("Unsupported auth role.");
 }
 
-function createTokenBundle({ role, identity }) {
-  const refreshToken = crypto.randomUUID();
-  const accessToken = createAccessToken({ role, subjectId: identity.id });
-  const refreshId = `refresh-${crypto.randomUUID()}`;
+async function createTokenBundle({ role, identity, meta }) {
+  const { authSessions } = await getCollections();
+  const sessionId = `session-${crypto.randomUUID()}`;
+  const refreshJti = crypto.randomUUID();
+  const refreshToken = signRefreshToken({ userId: identity.id, role, sessionId, jti: refreshJti });
+  const accessToken = signAccessToken({ userId: identity.id, role, sessionId });
+  const now = new Date();
+  const refreshExpiresAt = getTokenExpirationDate(refreshToken);
 
-  refreshSessions.set(refreshId, {
-    id: refreshId,
+  await authSessions.insertOne({
+    _id: sessionId,
+    userId: identity.id,
     role,
-    subjectId: identity.id,
+    currentJti: refreshJti,
     refreshTokenHash: hashValue(refreshToken),
-    createdAt: Date.now(),
-    expiresAt: Date.now() + REFRESH_TTL_MS,
-    revokedAt: null
+    issuedAt: now,
+    expiresAt: refreshExpiresAt,
+    revokedAt: null,
+    revokeReason: null,
+    userAgent: meta.userAgent ?? null,
+    ipAddress: meta.ipAddress ?? null,
+    lastUsedAt: now
   });
 
   return {
     accessToken,
     refreshToken,
-    accessExpiresAt: new Date(Date.now() + ACCESS_TTL_MS).toISOString(),
-    refreshExpiresAt: new Date(Date.now() + REFRESH_TTL_MS).toISOString(),
+    accessExpiresAt: getTokenExpirationDate(accessToken).toISOString(),
+    refreshExpiresAt: refreshExpiresAt.toISOString(),
+    sessionId,
     ...serializeAuthIdentity({ role, identity })
   };
 }
 
-function createAccessToken({ role, subjectId }) {
-  return Buffer.from(
-    JSON.stringify({
-      sub: subjectId,
-      role,
-      exp: Date.now() + ACCESS_TTL_MS
-    }),
-    "utf8"
-  ).toString("base64url");
+async function rotateRefreshSession({ session, identity, meta }) {
+  const { authSessions } = await getCollections();
+  const nextJti = crypto.randomUUID();
+  const refreshToken = signRefreshToken({
+    userId: identity.id,
+    role: session.role,
+    sessionId: session._id,
+    jti: nextJti
+  });
+  const accessToken = signAccessToken({ userId: identity.id, role: session.role, sessionId: session._id });
+  const refreshExpiresAt = getTokenExpirationDate(refreshToken);
+
+  await authSessions.updateOne(
+    { _id: session._id },
+    {
+      $set: {
+        currentJti: nextJti,
+        refreshTokenHash: hashValue(refreshToken),
+        expiresAt: refreshExpiresAt,
+        lastUsedAt: new Date(),
+        userAgent: meta.userAgent ?? session.userAgent ?? null,
+        ipAddress: meta.ipAddress ?? session.ipAddress ?? null
+      }
+    }
+  );
+
+  return {
+    accessToken,
+    refreshToken,
+    accessExpiresAt: getTokenExpirationDate(accessToken).toISOString(),
+    refreshExpiresAt: refreshExpiresAt.toISOString(),
+    sessionId: session._id
+  };
+}
+
+function signAccessToken({ userId, role, sessionId }) {
+  return jwt.sign(
+    { role, type: "access", sid: sessionId },
+    config.jwtAccessSecret,
+    {
+      issuer: config.jwtIssuer,
+      subject: userId,
+      expiresIn: config.accessTokenTtl
+    }
+  );
+}
+
+function signRefreshToken({ userId, role, sessionId, jti }) {
+  return jwt.sign(
+    { role, type: "refresh", sid: sessionId, jti },
+    config.jwtRefreshSecret,
+    {
+      issuer: config.jwtIssuer,
+      subject: userId,
+      jwtid: jti,
+      expiresIn: config.refreshTokenTtl
+    }
+  );
+}
+
+function verifyJwt(token, secret, expectedType) {
+  let decoded;
+  try {
+    decoded = jwt.verify(token, secret, { issuer: config.jwtIssuer });
+  } catch {
+    throw createBadRequest("Invalid token.");
+  }
+
+  if (decoded.type !== expectedType) {
+    throw createBadRequest("Invalid token type.");
+  }
+
+  return {
+    sub: decoded.sub,
+    role: decoded.role,
+    sid: decoded.sid,
+    jti: decoded.jti ?? decoded.jwtid,
+    exp: decoded.exp,
+    iat: decoded.iat,
+    type: decoded.type
+  };
+}
+
+function getTokenExpirationDate(token) {
+  const decoded = jwt.decode(token);
+  if (!decoded?.exp) {
+    throw new Error("Token expiration missing.");
+  }
+  return new Date(decoded.exp * 1000);
 }
 
 function hashValue(value) {
   return crypto.createHash("sha256").update(String(value)).digest("hex");
 }
 
-function findLatestOtpSession({ phoneNumber, role }) {
-  return [...otpSessions.values()]
-    .filter((session) => session.phoneNumber === phoneNumber && session.role === role)
-    .sort((a, b) => b.createdAt - a.createdAt)[0];
+async function findLatestOtpSession({ phone, role }) {
+  const { otpSessions } = await getCollections();
+  return otpSessions.findOne({ phone, role }, { sort: { createdAt: -1 } });
 }
 
-function findRefreshSession(refreshToken) {
-  const tokenHash = hashValue(refreshToken);
-  return [...refreshSessions.values()].find((session) => session.refreshTokenHash === tokenHash);
-}
-
-function resolveIdentityByPhone({ phoneNumber, role }) {
+async function resolveIdentityByPhone({ phoneNumber, role }) {
   if (role === "customer") {
-    const user = users.find((item) => item.phoneNumber === phoneNumber);
+    const user = await getUserByPhone(phoneNumber);
     if (user) return user;
 
+    const { users } = await getCollections();
+    const nextId = await createUserId(users, "user-");
+    const now = new Date().toISOString();
     const newUser = {
-      id: `user-${String(users.length + 1).padStart(3, "0")}`,
-      phoneNumber,
+      _id: nextId,
       name: "New User",
+      phone: phoneNumber,
       email: "",
+      role: "customer",
+      rating: 0,
+      createdAt: now,
       usage: "Personal",
       language: "English",
       walletBalance: 0,
@@ -259,43 +414,126 @@ function resolveIdentityByPhone({ phoneNumber, role }) {
       savedRouteIds: [],
       savedStopIds: []
     };
-    users.push(newUser);
-    return newUser;
+    await users.insertOne(newUser);
+    return formatIdentity(newUser);
   }
 
   if (role === "driver") {
-    const driver = getDriverByPhone(phoneNumber);
+    const driver = await getDriverByPhone(phoneNumber);
     if (!driver) {
       throw createBadRequest("Driver not found.");
     }
     return driver;
   }
 
+  if (role === "admin") {
+    const admin = await getUserByPhone(phoneNumber);
+    if (!admin || admin.role !== "admin") {
+      throw createBadRequest("Admin not found.");
+    }
+    return admin;
+  }
+
   throw createBadRequest("Unsupported auth role.");
 }
 
-function resolveIdentityById({ role, id }) {
+async function resolveIdentityById({ role, id }) {
   if (role === "customer") {
-    const user = getUserById(id);
-    if (!user) {
+    const user = await getUserById(id);
+    if (!user || user.role !== "customer") {
       throw createBadRequest("User not found.");
     }
     return user;
   }
 
   if (role === "driver") {
-    const driver = getDriverById(id);
+    const driver = await getDriverById(id);
     if (!driver) {
       throw createBadRequest("Driver not found.");
     }
     return driver;
   }
 
+  if (role === "admin") {
+    const admin = await getUserById(id);
+    if (!admin || admin.role !== "admin") {
+      throw createBadRequest("Admin not found.");
+    }
+    return admin;
+  }
+
   throw createBadRequest("Unsupported auth role.");
 }
 
 function validateRole(role) {
-  if (!["customer", "driver"].includes(role)) {
+  if (!["customer", "driver", "admin"].includes(role)) {
     throw createBadRequest("Unsupported auth role.");
   }
+}
+
+function ensurePendingOtpSession(session) {
+  if (session.status !== "pending") {
+    throw createBadRequest("OTP session is no longer active.");
+  }
+
+  if (new Date(session.expiresAt).getTime() < Date.now()) {
+    throw createBadRequest("OTP session expired.");
+  }
+
+  if (Number(session.attemptCount ?? 0) >= Number(session.maxAttempts ?? MAX_ATTEMPTS)) {
+    throw createBadRequest("OTP attempts exceeded.");
+  }
+}
+
+function assertActiveSession(session) {
+  if (session.revokedAt) {
+    throw createBadRequest("Refresh session revoked.");
+  }
+
+  if (new Date(session.expiresAt).getTime() < Date.now()) {
+    throw createBadRequest("Refresh session expired.");
+  }
+}
+
+async function revokeSession(sessionId, reason) {
+  const { authSessions } = await getCollections();
+  await authSessions.updateOne(
+    { _id: sessionId },
+    {
+      $set: {
+        revokedAt: new Date(),
+        revokeReason: reason
+      }
+    }
+  );
+}
+
+async function createUserId(collection, prefix) {
+  const latest = await collection
+    .find({ _id: { $regex: `^${prefix}` } }, { projection: { _id: 1 } })
+    .sort({ _id: -1 })
+    .limit(1)
+    .toArray();
+
+  const current = Number.parseInt(latest[0]?._id?.replace(prefix, "") ?? "0", 10);
+  return `${prefix}${String(Number.isNaN(current) ? 1 : current + 1).padStart(3, "0")}`;
+}
+
+function formatIdentity(user) {
+  return {
+    id: user._id,
+    name: user.name,
+    phone: user.phone,
+    phoneNumber: user.phone,
+    email: user.email ?? "",
+    role: user.role,
+    rating: user.rating ?? 0,
+    createdAt: user.createdAt,
+    badgeNumber: user.badgeNumber ?? null,
+    status: user.status ?? null,
+    usage: user.usage ?? "Personal",
+    language: user.language ?? "English",
+    walletBalance: user.walletBalance ?? 0,
+    gstNumber: user.gstNumber ?? ""
+  };
 }

@@ -1,71 +1,93 @@
-import {
-  bookings,
-  buses,
-  drivers,
-  liveTripEvents,
-  liveTripLocations,
-  routes,
-  tripAssignments,
-  users
-} from "../data.js";
+import { getCollections } from "../db.js";
 
-const BOOKING_STATUSES = ["Booked", "Loaded", "In Transit", "Reached", "Delivered"];
+const BOOKING_STATUSES = ["booked", "loaded", "in_transit", "reached", "delivered"];
 
-export function sanitizeRoute(route) {
+export async function sanitizeRoute(route) {
+  const stops = await getStopsForRoute(route._id);
   return {
-    id: route.id,
-    name: route.name,
-    code: route.code,
-    baseFare: route.baseFare,
-    perKmFare: route.perKmFare,
-    stops: route.stops,
-    slots: route.slots
+    id: route._id,
+    name: route.routeName,
+    code: route.code ?? route._id,
+    baseFare: route.basePrice,
+    perKmFare: route.perKmFare ?? 0,
+    startLocation: route.startLocation,
+    endLocation: route.endLocation,
+    distance: route.distance,
+    stops: stops.map(serializeStop),
+    slots: route.slots ?? []
   };
 }
 
-export function getRouteById(routeId) {
-  return routes.find((route) => route.id === routeId);
+export async function getRouteById(routeId) {
+  const { routes } = await getCollections();
+  return routes.findOne({ _id: routeId }, { projection: { _id: 1, routeName: 1, code: 1, basePrice: 1, perKmFare: 1, startLocation: 1, endLocation: 1, distance: 1, stopIds: 1, slots: 1 } });
 }
 
-export function getUserById(userId) {
-  return users.find((user) => user.id === userId);
+export async function getUserById(userId) {
+  const { users } = await getCollections();
+  const user = await users.findOne({ _id: userId });
+  return user ? serializeUser(user) : null;
 }
 
-export function getDriverById(driverId) {
-  return drivers.find((driver) => driver.id === driverId);
+export async function getUserByPhone(phone) {
+  const { users } = await getCollections();
+  const user = await users.findOne({ phone });
+  return user ? serializeUser(user) : null;
 }
 
-export function getDriverByPhone(phoneNumber) {
-  return drivers.find((driver) => driver.phoneNumber === phoneNumber);
+export async function getDriverById(driverId) {
+  const { users } = await getCollections();
+  const driver = await users.findOne({ _id: driverId, role: "driver" });
+  return driver ? serializeUser(driver) : null;
 }
 
-export function getBusById(busId) {
-  return buses.find((bus) => bus.id === busId);
+export async function getDriverByPhone(phone) {
+  const { users } = await getCollections();
+  const driver = await users.findOne({ phone, role: "driver" });
+  return driver ? serializeUser(driver) : null;
 }
 
-export function getTripById(tripId) {
-  return tripAssignments.find((trip) => trip.id === tripId);
+export async function getBusById(busId) {
+  const { buses } = await getCollections();
+  const bus = await buses.findOne({ _id: busId });
+  return bus ? serializeBus(bus) : null;
 }
 
-export function getTripForDriver(driverId) {
-  return tripAssignments.find((trip) => trip.driverId === driverId);
+export async function getTripById(busId) {
+  const { buses } = await getCollections();
+  const bus = await buses.findOne({ _id: busId });
+  return bus && bus.status === "running" ? bus : null;
 }
 
-export function getAllRoutes() {
-  return routes.map(sanitizeRoute);
+export async function getTripForDriver(driverId) {
+  const { buses } = await getCollections();
+  return buses.findOne(
+    { driverId, status: { $in: ["running", "idle"] } },
+    { sort: { startedAt: -1, _id: 1 } }
+  );
 }
 
-export function getAllBuses() {
-  return buses;
+export async function getAllRoutes() {
+  const { routes } = await getCollections();
+  const docs = await routes.find({}, { projection: { _id: 1, routeName: 1, code: 1, basePrice: 1, perKmFare: 1, startLocation: 1, endLocation: 1, distance: 1, stopIds: 1, slots: 1 } }).toArray();
+  return Promise.all(docs.map(sanitizeRoute));
 }
 
-export function getAllDrivers() {
-  return drivers;
+export async function getAllBuses() {
+  const { buses } = await getCollections();
+  const docs = await buses.find({}).toArray();
+  return docs.map(serializeBus);
 }
 
-export function validateStopSequence(route, pickupStopId, dropStopId) {
-  const pickupIndex = route.stops.findIndex((stop) => stop.id === pickupStopId);
-  const dropIndex = route.stops.findIndex((stop) => stop.id === dropStopId);
+export async function getAllDrivers() {
+  const { users } = await getCollections();
+  const docs = await users.find({ role: "driver" }).toArray();
+  return docs.map(serializeUser);
+}
+
+export function validateStopSequence(routeStops, pickupStopId, dropStopId) {
+  const pickupIndex = routeStops.findIndex((stop) => stop._id === pickupStopId);
+  const dropIndex = routeStops.findIndex((stop) => stop._id === dropStopId);
 
   if (pickupIndex === -1 || dropIndex === -1) {
     throw createBadRequest("Pickup or drop stop does not exist on this route.");
@@ -78,12 +100,12 @@ export function validateStopSequence(route, pickupStopId, dropStopId) {
   return {
     pickupIndex,
     dropIndex,
-    pickupStop: route.stops[pickupIndex],
-    dropStop: route.stops[dropIndex]
+    pickupStop: routeStops[pickupIndex],
+    dropStop: routeStops[dropIndex]
   };
 }
 
-export function calculateFare({
+export async function calculateFare({
   route,
   pickupStopId,
   dropStopId,
@@ -92,61 +114,63 @@ export function calculateFare({
   fragile,
   express
 }) {
-  const { pickupStop, dropStop } = validateStopSequence(route, pickupStopId, dropStopId);
+  const routeStops = await getStopsForRoute(route._id);
+  const { pickupStop, dropStop } = validateStopSequence(routeStops, pickupStopId, dropStopId);
   const distanceKm = dropStop.kmFromStart - pickupStop.kmFromStart;
-  const distanceFare = route.baseFare + distanceKm * route.perKmFare;
+  const distanceFare = route.basePrice + distanceKm * (route.perKmFare ?? 0);
   const weightCharge = Number(weightKg) * 8;
   const quantityCharge = (Number(quantity) - 1) * 24;
   const fragileCharge = fragile ? 40 : 0;
   const expressCharge = express ? 75 : 0;
-  const total = Math.round(distanceFare + weightCharge + quantityCharge + fragileCharge + expressCharge);
+  const totalFare = Math.round(distanceFare + weightCharge + quantityCharge + fragileCharge + expressCharge);
 
   return {
-    routeId: route.id,
-    pickupStop,
-    dropStop,
+    routeId: route._id,
+    pickupStop: serializeStop(pickupStop),
+    dropStop: serializeStop(dropStop),
     distanceKm,
     breakdown: {
-      baseFare: route.baseFare,
-      distanceFare: Math.round(distanceKm * route.perKmFare),
+      baseFare: route.basePrice,
+      distanceFare: Math.round(distanceKm * (route.perKmFare ?? 0)),
       weightCharge,
       quantityCharge,
       fragileCharge,
       expressCharge
     },
-    totalFare: total
+    totalFare
   };
 }
 
-export function createBooking({
+export async function createBooking({
   userId,
+  busId,
   routeId,
   pickupStopId,
   dropStopId,
-  slotId,
-  packageType,
   weightKg,
   quantity,
   fragile,
   express,
-  paymentMethod
+  paymentMethod,
+  packageType,
+  slotId
 }) {
-  const user = getUserById(userId);
+  const { bookings, buses, payments } = await getCollections();
+  const [user, route] = await Promise.all([getUserById(userId), getRouteById(routeId)]);
   if (!user) {
     throw createBadRequest("User does not exist.");
   }
-
-  const route = getRouteById(routeId);
   if (!route) {
     throw createBadRequest("Route does not exist.");
   }
 
-  const slot = route.slots.find((item) => item.id === slotId);
-  if (!slot) {
-    throw createBadRequest("Selected slot does not exist for this route.");
+  const resolvedBusId = busId ?? (await resolveBusForRoute(routeId, slotId));
+  const bus = resolvedBusId ? await getBusById(resolvedBusId) : null;
+  if (!bus) {
+    throw createBadRequest("Bus is not available for this booking.");
   }
 
-  const quote = calculateFare({
+  const quote = await calculateFare({
     route,
     pickupStopId,
     dropStopId,
@@ -156,180 +180,264 @@ export function createBooking({
     express
   });
 
+  const bookingId = await createSequenceId(bookings, "booking-", 240302);
+  const paymentId = await createSequenceId(payments, "payment-", 240302);
+  const timestamp = new Date().toISOString();
+
   const booking = {
-    id: `BK-${String(bookings.length + 240302).padStart(6, "0")}`,
+    _id: bookingId,
     userId,
+    busId: bus.id,
     routeId,
     pickupStopId,
     dropStopId,
-    slotId,
-    packageType,
-    weightKg: Number(weightKg),
+    weight: Number(weightKg),
     quantity: Number(quantity),
+    price: quote.totalFare,
+    packageType: packageType ?? "Cargo",
     fragile: Boolean(fragile),
     express: Boolean(express),
-    fare: quote.totalFare,
-    paymentMethod,
-    status: "Booked",
-    createdAt: new Date().toISOString(),
-    tracking: [{ status: "Booked", time: new Date().toISOString() }]
+    paymentMethod: paymentMethod ?? "UPI",
+    slotId: slotId ?? null,
+    status: "booked",
+    createdAt: timestamp,
+    tracking: [{ status: "booked", message: "Booking created", time: timestamp }]
   };
 
-  bookings.unshift(booking);
+  await bookings.insertOne(booking);
+  await payments.insertOne({
+    _id: paymentId,
+    bookingId,
+    userId,
+    amount: booking.price,
+    method: booking.paymentMethod,
+    status: "success",
+    transactionId: `TXN-${paymentId}`,
+    createdAt: timestamp
+  });
+
+  await buses.updateOne(
+    { _id: bus.id },
+    { $set: { capacityAvailable: Math.max(0, (bus.capacityTotal ?? 0) - booking.weight) } }
+  );
 
   return serializeBooking(booking);
 }
 
-export function createRoute({ name, code, baseFare, perKmFare, stops = [], slots = [] }) {
+export async function createRoute({ name, code, baseFare, perKmFare, stops = [], slots = [] }) {
+  const { routes, stops: stopCollection } = await getCollections();
   if (!name || !code) {
     throw createBadRequest("name and code are required.");
   }
 
+  const routeId = `route-${slugify(name)}-${Date.now()}`;
+  const normalizedStops = normalizeStops(routeId, stops);
   const route = {
-    id: `route-${slugify(name)}-${routes.length + 1}`,
-    name,
-    code,
-    baseFare: Number(baseFare ?? 0),
+    _id: routeId,
+    routeName: name,
+    startLocation: normalizedStops[0]?.name ?? "Unknown",
+    endLocation: normalizedStops.at(-1)?.name ?? "Unknown",
+    stopIds: normalizedStops.map((stop) => stop._id),
+    distance: normalizedStops.at(-1)?.kmFromStart ?? 0,
+    basePrice: Number(baseFare ?? 0),
     perKmFare: Number(perKmFare ?? 0),
-    stops: normalizeStops(stops),
+    code,
     slots: normalizeSlots(slots)
   };
 
-  routes.push(route);
+  await routes.insertOne(route);
+  if (normalizedStops.length > 0) {
+    await stopCollection.insertMany(normalizedStops);
+  }
+
   return sanitizeRoute(route);
 }
 
-export function createBus({ busNumber, capacityKg, routeId, status = "Idle" }) {
+export async function createBus({ busNumber, capacityKg, routeId, driverId, status = "idle" }) {
+  const { buses } = await getCollections();
   if (!busNumber || !capacityKg) {
     throw createBadRequest("busNumber and capacityKg are required.");
   }
 
-  if (routeId && !getRouteById(routeId)) {
+  if (routeId && !(await getRouteById(routeId))) {
     throw createBadRequest("routeId does not exist.");
   }
 
+  if (driverId && !(await getDriverById(driverId))) {
+    throw createBadRequest("driverId does not exist.");
+  }
+
   const bus = {
-    id: `bus-${String(buses.length + 1).padStart(3, "0")}`,
+    _id: await createSequenceId(buses, "bus-", 3, 3),
     busNumber,
-    capacityKg: Number(capacityKg),
+    driverId: driverId ?? null,
+    capacityTotal: Number(capacityKg),
+    capacityAvailable: Number(capacityKg),
     routeId: routeId ?? null,
-    status
+    currentLocation: null,
+    status,
+    currentStopId: null,
+    nextStopId: null,
+    startedAt: null,
+    completedAt: null
   };
 
-  buses.push(bus);
-  return bus;
+  await buses.insertOne(bus);
+  return serializeBus(bus);
 }
 
-export function createDriver({ name, phoneNumber, badgeNumber, role = "Driver", status = "Available", rating = 5 }) {
+export async function createDriver({ name, phoneNumber, badgeNumber, role = "driver", status = "Available", rating = 5, email = "" }) {
+  const { users } = await getCollections();
   if (!name || !phoneNumber || !badgeNumber) {
     throw createBadRequest("name, phoneNumber and badgeNumber are required.");
   }
 
   const driver = {
-    id: `driver-${String(drivers.length + 1).padStart(3, "0")}`,
-    phoneNumber,
+    _id: await createSequenceId(users, "driver-", 3, 3, { role: "driver" }),
     name,
-    badgeNumber,
+    phone: phoneNumber,
+    email,
     role,
-    status,
-    rating: Number(rating)
+    rating: Number(rating),
+    createdAt: new Date().toISOString(),
+    badgeNumber,
+    status
   };
 
-  drivers.push(driver);
-  return driver;
+  await users.insertOne(driver);
+  return serializeUser(driver);
 }
 
-export function updateBookingStatus(bookingId, status) {
-  const booking = bookings.find((item) => item.id === bookingId);
+export async function updateBookingStatus(bookingId, status) {
+  const { bookings } = await getCollections();
+  const normalizedStatus = normalizeBookingStatus(status);
+  const booking = await bookings.findOne({ _id: bookingId });
   if (!booking) {
     throw createBadRequest("Booking not found.");
   }
 
-  booking.status = status;
-  booking.tracking.unshift({ status, time: new Date().toISOString() });
+  booking.status = normalizedStatus;
+  booking.tracking = [
+    { status: normalizedStatus, message: `Booking marked as ${normalizedStatus}`, time: new Date().toISOString() },
+    ...(booking.tracking ?? [])
+  ];
+
+  await bookings.updateOne(
+    { _id: bookingId },
+    { $set: { status: booking.status, tracking: booking.tracking } }
+  );
+
   return serializeBooking(booking);
 }
 
-export function serializeBooking(booking) {
-  const route = getRouteById(booking.routeId);
-  const slot = route?.slots.find((item) => item.id === booking.slotId);
-  const pickup = route?.stops.find((stop) => stop.id === booking.pickupStopId);
-  const drop = route?.stops.find((stop) => stop.id === booking.dropStopId);
+export async function serializeBooking(booking) {
+  const [route, pickupStop, dropStop, bus, payment] = await Promise.all([
+    getRouteById(booking.routeId),
+    getStopById(booking.pickupStopId),
+    getStopById(booking.dropStopId),
+    getBusById(booking.busId),
+    getPaymentByBookingId(booking._id)
+  ]);
+
+  const slot = route?.slots?.find((item) => item.id === booking.slotId) ?? null;
 
   return {
-    ...booking,
-    route: route ? { id: route.id, name: route.name, code: route.code } : null,
+    id: booking._id,
+    userId: booking.userId,
+    busId: booking.busId,
+    routeId: booking.routeId,
+    pickupStopId: booking.pickupStopId,
+    dropStopId: booking.dropStopId,
+    packageType: booking.packageType ?? "Cargo",
+    weightKg: booking.weight,
+    quantity: booking.quantity ?? 1,
+    fragile: Boolean(booking.fragile),
+    express: Boolean(booking.express),
+    fare: booking.price,
+    paymentMethod: booking.paymentMethod ?? payment?.method ?? "UPI",
+    status: apiBookingStatus(booking.status),
+    statusFlow: BOOKING_STATUSES.map(apiBookingStatus),
+    createdAt: booking.createdAt,
+    tracking: (booking.tracking ?? []).map((entry) => ({
+      status: apiBookingStatus(entry.status),
+      time: entry.time,
+      message: entry.message
+    })),
+    route: route ? { id: route._id, name: route.routeName, code: route.code } : null,
     slot,
-    pickupStop: pickup,
-    dropStop: drop,
-    statusFlow: BOOKING_STATUSES
+    pickupStop: pickupStop ? serializeStop(pickupStop) : null,
+    dropStop: dropStop ? serializeStop(dropStop) : null,
+    bus,
+    payment
   };
 }
 
-export function getBookingsForUser(userId) {
-  return bookings.filter((booking) => booking.userId === userId).map(serializeBooking);
+export async function getBookingsForUser(userId) {
+  const { bookings } = await getCollections();
+  const docs = await bookings.find({ userId }).sort({ createdAt: -1 }).toArray();
+  return Promise.all(docs.map((booking) => serializeBooking(booking)));
 }
 
-export function getBookingById(bookingId) {
-  const booking = bookings.find((item) => item.id === bookingId);
+export async function getBookingById(bookingId) {
+  const { bookings } = await getCollections();
+  const booking = await bookings.findOne({ _id: bookingId });
   return booking ? serializeBooking(booking) : null;
 }
 
-export function serializeTrip(trip) {
-  const route = getRouteById(trip.routeId);
-  const bus = getBusById(trip.busId);
-  const driver = getDriverById(trip.driverId);
-  const slot = route?.slots.find((item) => item.id === trip.slotId) ?? null;
-  const currentStop = route?.stops.find((stop) => stop.id === trip.currentStopId) ?? null;
-  const nextStop = route?.stops.find((stop) => stop.id === trip.nextStopId) ?? null;
-  const location = liveTripLocations.get(trip.id) ?? null;
-  const cargoBookings = trip.bookingIds
-    .map((bookingId) => getBookingById(bookingId))
-    .filter(Boolean);
+export async function serializeTrip(busDoc) {
+  const bus = serializeBus(busDoc);
+  const [route, driver, currentStop, nextStop, liveLocation, cargoBookings] = await Promise.all([
+    getRouteById(bus.routeId),
+    getDriverById(bus.driverId),
+    bus.currentStopId ? getStopById(bus.currentStopId) : null,
+    bus.nextStopId ? getStopById(bus.nextStopId) : null,
+    getLiveLocationByBusId(bus.id),
+    getBookingsForBus(bus.id)
+  ]);
+
+  const hydratedRoute = route ? await sanitizeRoute(route) : null;
+  const slot = route?.slots?.find((item) => item.busNumber === bus.busNumber) ?? route?.slots?.[0] ?? null;
 
   return {
-    ...trip,
-    route: route ? sanitizeRoute(route) : null,
+    id: bus.id,
+    status: bus.status === "running" ? "Active" : bus.status === "completed" ? "Completed" : "Assigned",
+    route: hydratedRoute,
     bus,
     driver,
     slot,
-    currentStop,
-    nextStop,
-    liveLocation: location,
+    currentStop: currentStop ? serializeStop(currentStop) : null,
+    nextStop: nextStop ? serializeStop(nextStop) : null,
+    liveLocation,
     cargoBookings,
-    stopCount: route?.stops.length ?? 0
+    stopCount: hydratedRoute?.stops.length ?? 0,
+    startedAt: busDoc.startedAt ?? null
   };
 }
 
-export function createDriverSession(phoneNumber) {
-  const driver = getDriverByPhone(phoneNumber);
-  if (!driver) {
-    throw createBadRequest("Driver not found.");
-  }
-
-  return {
-    token: `driver-token-${driver.id}`,
-    driver,
-    assignment: getTripForDriver(driver.id) ? serializeTrip(getTripForDriver(driver.id)) : null
-  };
-}
-
-export function getDriverAssignment(driverId) {
-  const trip = getTripForDriver(driverId);
-  if (!trip) {
+export async function getDriverAssignment(driverId) {
+  const bus = await getTripForDriver(driverId);
+  if (!bus) {
     throw createBadRequest("No trip assignment available.");
   }
-
-  return serializeTrip(trip);
+  return serializeTrip(bus);
 }
 
-export function getTripTracking(tripId) {
-  const trip = getTripById(tripId);
-  if (!trip) {
+export async function getTripTracking(busId) {
+  const bus = await getTripById(busId);
+  if (!bus) {
     throw createBadRequest("Trip not found.");
   }
 
-  const serializedTrip = serializeTrip(trip);
+  const [serializedTrip, cargoBookings] = await Promise.all([
+    serializeTrip(bus),
+    getBookingsForBus(busId)
+  ]);
+
+  const events = cargoBookings
+    .flatMap((booking) => booking.tracking ?? [])
+    .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+    .slice(0, 20);
+
   return {
     tripId: serializedTrip.id,
     status: serializedTrip.status,
@@ -338,27 +446,39 @@ export function getTripTracking(tripId) {
     route: serializedTrip.route,
     bus: serializedTrip.bus,
     liveLocation: serializedTrip.liveLocation,
-    events: liveTripEvents.get(tripId) ?? []
+    events
   };
 }
 
-export function updateTripStatus(tripId, status) {
-  const trip = getTripById(tripId);
-  if (!trip) {
+export async function updateTripStatus(busId, status) {
+  const { buses } = await getCollections();
+  const bus = await buses.findOne({ _id: busId });
+  if (!bus) {
     throw createBadRequest("Trip not found.");
   }
 
-  trip.status = status;
-  appendTripEvent(tripId, {
-    type: "trip.status",
-    message: `Trip marked as ${status}`,
+  const mappedStatus = normalizeBusStatus(status);
+  await buses.updateOne(
+    { _id: busId },
+    {
+      $set: {
+        status: mappedStatus,
+        completedAt: mappedStatus === "completed" ? new Date().toISOString() : null,
+        startedAt: mappedStatus === "running" ? bus.startedAt ?? new Date().toISOString() : bus.startedAt ?? null
+      }
+    }
+  );
+
+  await appendTripEvent(busId, {
+    status: mappedStatus === "running" ? "in_transit" : mappedStatus === "completed" ? "delivered" : "booked",
+    message: `Bus status changed to ${mappedStatus}`,
     time: new Date().toISOString()
   });
 
-  return serializeTrip(trip);
+  return serializeTrip({ ...bus, _id: busId, status: mappedStatus });
 }
 
-export function updateTripLocation({
+export async function updateTripLocation({
   tripId,
   driverId,
   lat,
@@ -367,18 +487,19 @@ export function updateTripLocation({
   heading = 0,
   label = "On route"
 }) {
-  const trip = getTripById(tripId);
-  if (!trip) {
+  const { liveLocations, buses } = await getCollections();
+  const bus = await buses.findOne({ _id: tripId });
+  if (!bus) {
     throw createBadRequest("Trip not found.");
   }
 
-  if (trip.driverId !== driverId) {
+  if (bus.driverId !== driverId) {
     throw createBadRequest("Driver is not assigned to this trip.");
   }
 
   const payload = {
-    tripId,
-    driverId,
+    _id: `live-${tripId}`,
+    busId: tripId,
     lat: Number(lat),
     lng: Number(lng),
     speed: Number(speed),
@@ -387,36 +508,86 @@ export function updateTripLocation({
     updatedAt: new Date().toISOString()
   };
 
-  liveTripLocations.set(tripId, payload);
-  return payload;
+  await liveLocations.updateOne({ busId: tripId }, { $set: payload }, { upsert: true });
+  await buses.updateOne(
+    { _id: tripId },
+    {
+      $set: {
+        currentLocation: { lat: payload.lat, lng: payload.lng }
+      }
+    }
+  );
+
+  return {
+    tripId,
+    driverId,
+    lat: payload.lat,
+    lng: payload.lng,
+    speed: payload.speed,
+    heading: payload.heading,
+    label: payload.label,
+    updatedAt: payload.updatedAt
+  };
 }
 
-export function updateTripStop({ tripId, currentStopId, nextStopId, message }) {
-  const trip = getTripById(tripId);
-  if (!trip) {
+export async function updateTripStop({ tripId, currentStopId, nextStopId, message }) {
+  const { buses } = await getCollections();
+  const bus = await buses.findOne({ _id: tripId });
+  if (!bus) {
     throw createBadRequest("Trip not found.");
   }
 
-  trip.currentStopId = currentStopId ?? trip.currentStopId;
-  trip.nextStopId = nextStopId ?? trip.nextStopId;
+  await buses.updateOne(
+    { _id: tripId },
+    {
+      $set: {
+        currentStopId: currentStopId ?? bus.currentStopId,
+        nextStopId: nextStopId ?? bus.nextStopId
+      }
+    }
+  );
 
-  appendTripEvent(tripId, {
-    type: "stop.update",
+  await appendTripEvent(tripId, {
+    status: "in_transit",
     message: message ?? "Trip stop update received",
     time: new Date().toISOString()
   });
 
-  return serializeTrip(trip);
+  return serializeTrip({
+    ...bus,
+    _id: tripId,
+    currentStopId: currentStopId ?? bus.currentStopId,
+    nextStopId: nextStopId ?? bus.nextStopId
+  });
 }
 
-export function appendTripEvent(tripId, event) {
-  const existing = liveTripEvents.get(tripId) ?? [];
-  existing.unshift(event);
-  liveTripEvents.set(tripId, existing.slice(0, 20));
+export async function appendTripEvent(busId, event) {
+  const { bookings } = await getCollections();
+  const busBookings = await bookings.find({ busId }, { projection: { _id: 1, tracking: 1 } }).toArray();
+
+  await Promise.all(
+    busBookings.map((booking) =>
+      bookings.updateOne(
+        { _id: booking._id },
+        {
+          $set: {
+            tracking: [event, ...(booking.tracking ?? [])].slice(0, 20)
+          }
+        }
+      )
+    )
+  );
 }
 
-export function getAdminSummary() {
-  const activeTrips = tripAssignments.filter((trip) => trip.status === "Active").length;
+export async function getAdminSummary() {
+  const [routes, buses, drivers, bookings] = await Promise.all([
+    getAllRoutes(),
+    getAllBuses(),
+    getAllDrivers(),
+    getAllBookings()
+  ]);
+
+  const activeTrips = buses.filter((bus) => bus.status === "Assigned");
   const activeBookings = bookings.filter((booking) => booking.status !== "Delivered").length;
   const revenue = bookings.reduce((sum, booking) => sum + booking.fare, 0);
 
@@ -426,28 +597,92 @@ export function getAdminSummary() {
       buses: buses.length,
       drivers: drivers.length,
       bookings: bookings.length,
-      activeTrips,
+      activeTrips: activeTrips.length,
       revenue
     },
-    activeTrips: tripAssignments.map(serializeTrip),
-    routes: routes.map(sanitizeRoute),
+    activeTrips: await Promise.all(activeTrips.map((bus) => serializeTrip(deserializeBus(bus)))),
+    routes,
     buses,
     drivers,
-    recentBookings: bookings.slice(0, 6).map(serializeBooking),
+    recentBookings: bookings.slice(0, 6),
     fleetStatus: {
-      assigned: buses.filter((bus) => bus.status === "Assigned").length,
-      idle: buses.filter((bus) => bus.status === "Idle").length,
+      assigned: buses.filter((bus) => ["running", "idle"].includes(bus.status.toLowerCase())).length,
+      idle: buses.filter((bus) => bus.status.toLowerCase() === "idle").length,
       activeBookings
     }
   };
 }
 
-function normalizeStops(stops) {
+export function createBadRequest(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+async function getAllBookings() {
+  const { bookings } = await getCollections();
+  const docs = await bookings.find({}).sort({ createdAt: -1 }).toArray();
+  return Promise.all(docs.map((booking) => serializeBooking(booking)));
+}
+
+async function getBookingsForBus(busId) {
+  const { bookings } = await getCollections();
+  const docs = await bookings.find({ busId }).sort({ createdAt: -1 }).toArray();
+  return Promise.all(docs.map((booking) => serializeBooking(booking)));
+}
+
+async function getStopsForRoute(routeId) {
+  const { stops } = await getCollections();
+  return stops.find({ routeId }).sort({ order: 1 }).toArray();
+}
+
+async function getStopById(stopId) {
+  const { stops } = await getCollections();
+  return stops.findOne({ _id: stopId });
+}
+
+async function getLiveLocationByBusId(busId) {
+  const { liveLocations } = await getCollections();
+  const doc = await liveLocations.findOne({ busId }, { projection: { _id: 0 } });
+  return doc
+    ? {
+        tripId: busId,
+        lat: doc.lat,
+        lng: doc.lng,
+        speed: doc.speed ?? 0,
+        heading: doc.heading ?? 0,
+        label: doc.label ?? "On route",
+        updatedAt: doc.updatedAt
+      }
+    : null;
+}
+
+async function getPaymentByBookingId(bookingId) {
+  const { payments } = await getCollections();
+  return payments.findOne({ bookingId }, { projection: { _id: 0 } });
+}
+
+async function resolveBusForRoute(routeId, slotId) {
+  const { buses } = await getCollections();
+  const query = { routeId };
+  if (slotId) {
+    const bus = await buses.findOne({ routeId, status: { $in: ["running", "idle"] } }, { projection: { _id: 1 }, sort: { status: 1 } });
+    return bus?._id ?? null;
+  }
+
+  const bus = await buses.findOne(query, { projection: { _id: 1 }, sort: { status: 1 } });
+  return bus?._id ?? null;
+}
+
+function normalizeStops(routeId, stops) {
   return (stops ?? [])
     .filter((stop) => stop?.name)
     .map((stop, index) => ({
-      id: stop.id ?? `${slugify(stop.name)}-${index + 1}`,
+      _id: stop.id ?? `stop-${slugify(stop.name)}-${Date.now()}-${index + 1}`,
       name: stop.name,
+      location: stop.location ?? { lat: 0, lng: 0 },
+      order: index + 1,
+      routeId,
       kmFromStart: Number(stop.kmFromStart ?? index * 20),
       region: stop.region ?? "Unknown"
     }));
@@ -473,8 +708,115 @@ function slugify(value) {
     .replace(/^-|-$/g, "");
 }
 
-export function createBadRequest(message) {
-  const error = new Error(message);
-  error.statusCode = 400;
-  return error;
+function serializeUser(user) {
+  return {
+    id: user._id ?? user.id,
+    name: user.name,
+    phone: user.phone,
+    phoneNumber: user.phone,
+    email: user.email ?? "",
+    role: user.role,
+    rating: user.rating ?? 0,
+    createdAt: user.createdAt,
+    badgeNumber: user.badgeNumber ?? null,
+    status: user.status ?? null,
+    usage: user.usage ?? "Personal",
+    language: user.language ?? "English",
+    walletBalance: user.walletBalance ?? 0,
+    gstNumber: user.gstNumber ?? ""
+  };
+}
+
+function serializeBus(bus) {
+  return {
+    id: bus._id ?? bus.id,
+    busNumber: bus.busNumber,
+    driverId: bus.driverId ?? null,
+    capacityKg: bus.capacityTotal,
+    capacityTotal: bus.capacityTotal,
+    capacityAvailable: bus.capacityAvailable,
+    routeId: bus.routeId ?? null,
+    currentLocation: bus.currentLocation ?? null,
+    status: apiBusStatus(bus.status),
+    currentStopId: bus.currentStopId ?? null,
+    nextStopId: bus.nextStopId ?? null,
+    startedAt: bus.startedAt ?? null,
+    completedAt: bus.completedAt ?? null
+  };
+}
+
+function deserializeBus(bus) {
+  return {
+    _id: bus.id,
+    busNumber: bus.busNumber,
+    driverId: bus.driverId,
+    capacityTotal: bus.capacityTotal ?? bus.capacityKg,
+    capacityAvailable: bus.capacityAvailable,
+    routeId: bus.routeId,
+    currentLocation: bus.currentLocation,
+    status: normalizeBusStatus(bus.status),
+    currentStopId: bus.currentStopId,
+    nextStopId: bus.nextStopId,
+    startedAt: bus.startedAt,
+    completedAt: bus.completedAt
+  };
+}
+
+function serializeStop(stop) {
+  return {
+    id: stop._id ?? stop.id,
+    name: stop.name,
+    kmFromStart: stop.kmFromStart ?? 0,
+    region: stop.region ?? "Unknown",
+    location: stop.location ?? null,
+    order: stop.order ?? null,
+    routeId: stop.routeId ?? null
+  };
+}
+
+function normalizeBookingStatus(status) {
+  const value = String(status ?? "").trim().toLowerCase().replace(/\s+/g, "_");
+  if (!BOOKING_STATUSES.includes(value)) {
+    throw createBadRequest("Unsupported booking status.");
+  }
+  return value;
+}
+
+function normalizeBusStatus(status) {
+  const value = String(status ?? "").trim().toLowerCase();
+  if (["assigned", "active", "running"].includes(value)) {
+    return "running";
+  }
+  if (["idle", "available"].includes(value)) {
+    return "idle";
+  }
+  if (["completed", "delivered"].includes(value)) {
+    return "completed";
+  }
+  throw createBadRequest("Unsupported bus status.");
+}
+
+function apiBookingStatus(status) {
+  return String(status)
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function apiBusStatus(status) {
+  if (status === "running") return "Assigned";
+  if (status === "completed") return "Completed";
+  return "Idle";
+}
+
+async function createSequenceId(collection, prefix, base, padLength = 6, extraFilter = {}) {
+  const latest = await collection
+    .find({ _id: { $regex: `^${prefix}` }, ...extraFilter }, { projection: { _id: 1 } })
+    .sort({ _id: -1 })
+    .limit(1)
+    .toArray();
+
+  const currentValue = latest[0]?._id?.replace(prefix, "");
+  const numeric = Number.parseInt(currentValue ?? `${base - 1}`, 10);
+  return `${prefix}${String(Number.isNaN(numeric) ? base : numeric + 1).padStart(padLength, "0")}`;
 }

@@ -1,3 +1,11 @@
+const authGate = document.getElementById("authGate");
+const adminShell = document.querySelector(".shell:not(#authGate)");
+const adminLoginForm = document.getElementById("adminLoginForm");
+const adminOtpForm = document.getElementById("adminOtpForm");
+const adminPhone = document.getElementById("adminPhone");
+const adminOtp = document.getElementById("adminOtp");
+const authMessage = document.getElementById("authMessage");
+
 const statsRoot = document.getElementById("stats");
 const heroTitle = document.getElementById("heroTitle");
 const navLinks = [...document.querySelectorAll("#navLinks a")];
@@ -23,13 +31,43 @@ const routeForm = document.getElementById("routeForm");
 const busForm = document.getElementById("busForm");
 const driverForm = document.getElementById("driverForm");
 
-const socket = io();
-socket.emit("admin:subscribe");
-
+let accessToken = localStorage.getItem("admin_access_token");
+let otpSessionId = null;
 let summaryCache = null;
+let socket = null;
 
-socket.on("admin:fleet:update", () => loadDashboard());
-socket.on("admin:trip:event", () => loadDashboard());
+adminShell.style.display = "none";
+
+adminLoginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const payload = await postJson("/api/admin/auth/send-otp", {
+      phoneNumber: adminPhone.value.trim()
+    }, false);
+    otpSessionId = payload.data.sessionId;
+    authMessage.textContent = payload.data.otpPreview
+      ? `OTP sent. Preview: ${payload.data.otpPreview}`
+      : "OTP sent to the admin phone number.";
+  } catch (error) {
+    authMessage.textContent = error.message;
+  }
+});
+
+adminOtpForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const payload = await postJson("/api/admin/auth/verify-otp", {
+      sessionId: otpSessionId,
+      otp: adminOtp.value.trim()
+    }, false);
+    accessToken = payload.data.accessToken;
+    localStorage.setItem("admin_access_token", accessToken);
+    authMessage.textContent = "Authenticated.";
+    await initAdmin();
+  } catch (error) {
+    authMessage.textContent = error.message;
+  }
+});
 
 refreshButton.addEventListener("click", () => loadDashboard());
 seedTripButton.addEventListener("click", simulateRealtime);
@@ -72,7 +110,7 @@ driverForm.addEventListener("submit", async (event) => {
     name: formData.get("name"),
     phoneNumber: formData.get("phoneNumber"),
     badgeNumber: formData.get("badgeNumber"),
-    role: formData.get("role"),
+    role: formData.get("role").toLowerCase(),
     status: formData.get("status")
   });
   driverForm.reset();
@@ -80,9 +118,35 @@ driverForm.addEventListener("submit", async (event) => {
   location.hash = "drivers";
 });
 
+async function initAdmin() {
+  if (!accessToken) {
+    try {
+      const payload = await postJson("/api/admin/auth/refresh", {}, false);
+      accessToken = payload.data.accessToken;
+      localStorage.setItem("admin_access_token", accessToken);
+    } catch {
+      authGate.style.display = "flex";
+      adminShell.style.display = "none";
+      return;
+    }
+  }
+
+  authGate.style.display = "none";
+  adminShell.style.display = "flex";
+
+  if (!socket) {
+    socket = io();
+    socket.emit("admin:subscribe");
+    socket.on("admin:fleet:update", () => loadDashboard());
+    socket.on("admin:trip:event", () => loadDashboard());
+  }
+
+  await loadDashboard();
+}
+
 async function loadDashboard() {
-  const response = await fetch("/api/admin/summary");
-  const { data } = await response.json();
+  const payload = await apiJson("/api/admin/summary");
+  const data = payload.data;
   summaryCache = data;
 
   renderStats(data.totals);
@@ -166,8 +230,8 @@ function renderDrivers(drivers) {
       (driver) => `
         <div class="card">
           <strong>${driver.name}</strong>
-          <p class="meta">${driver.role} · ${driver.badgeNumber}</p>
-          <span class="pill ${driver.status.toLowerCase()}">${driver.status}</span>
+          <p class="meta">${driver.role} · ${driver.badgeNumber ?? "-"}</p>
+          <span class="pill ${(driver.status ?? "unknown").toLowerCase()}">${driver.status ?? "Unknown"}</span>
         </div>
       `
     )
@@ -226,7 +290,7 @@ function renderManagerViews(data) {
       (driver) => `
         <div class="card">
           <strong>${driver.name}</strong>
-          <p class="meta">${driver.phoneNumber} · ${driver.badgeNumber}</p>
+          <p class="meta">${driver.phoneNumber} · ${driver.badgeNumber ?? "-"}</p>
           <p class="meta">${driver.role} · Rating ${driver.rating}</p>
         </div>
       `
@@ -364,28 +428,57 @@ async function simulateRealtime() {
   });
 }
 
-async function postJson(url, body) {
+async function apiJson(url, options = {}) {
   const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
+    credentials: "include",
+    ...options,
+    headers: {
+      ...(options.headers ?? {}),
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {})
+    }
   });
+
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error?.message ?? "Request failed.");
-  return payload;
+  if (response.ok) {
+    return payload;
+  }
+
+  if ([400, 401].includes(response.status) && accessToken) {
+    try {
+      const refreshed = await postJson("/api/admin/auth/refresh", {}, false);
+      accessToken = refreshed.data.accessToken;
+      localStorage.setItem("admin_access_token", accessToken);
+      return apiJson(url, options);
+    } catch {
+      accessToken = null;
+      localStorage.removeItem("admin_access_token");
+      authGate.style.display = "flex";
+      adminShell.style.display = "none";
+    }
+  }
+
+  throw new Error(payload.error?.message ?? "Request failed.");
+}
+
+async function postJson(url, body, auth = true) {
+  return apiJson(url, {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json" },
+    ...(auth ? {} : { headers: { "Content-Type": "application/json" } })
+  });
 }
 
 async function patchJson(url, body) {
-  const response = await fetch(url, {
+  return apiJson(url, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json" }
   });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error?.message ?? "Request failed.");
-  return payload;
 }
 
-loadDashboard().catch((error) => {
-  heroTitle.textContent = error.message;
+initAdmin().catch((error) => {
+  authMessage.textContent = error.message;
+  authGate.style.display = "flex";
+  adminShell.style.display = "none";
 });
