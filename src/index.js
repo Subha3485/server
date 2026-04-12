@@ -8,6 +8,15 @@ import { getRuntimeMode, resolveDbNameForMode } from "./runtime_mode.js";
 
 const PORT_RETRY_LIMIT = 10;
 const IS_DYNAMIC_PORT_ASSIGNED = typeof process.env.PORT !== "undefined";
+const DYNAMIC_HOST = "0.0.0.0";
+
+function resolveListenHost() {
+  if (IS_DYNAMIC_PORT_ASSIGNED) {
+    return DYNAMIC_HOST;
+  }
+
+  return config.host;
+}
 
 function buildPublicBaseUrl(host, port) {
   if (IS_DYNAMIC_PORT_ASSIGNED) {
@@ -82,9 +91,13 @@ try {
   const httpServer = createServer();
   const io = createRealtimeServer(httpServer);
   const app = createApp(io);
+  const listenHost = resolveListenHost();
+
+  console.log(`ENV PORT: ${process.env.PORT ?? "undefined"}`);
+
   httpServer.on("request", app);
-  const activePort = await listenWithPortRetry(httpServer, config.host, config.port);
-  const activeBaseUrl = buildPublicBaseUrl(config.host, activePort);
+  const activePort = await listenWithPortRetry(httpServer, listenHost, config.port);
+  const activeBaseUrl = buildPublicBaseUrl(listenHost, activePort);
 
   httpServer.on("error", (error) => {
     console.error("❌ Server runtime error.");
@@ -100,7 +113,8 @@ try {
     console.log("╚═══════════════════════════════════════════════════════════╝");
     console.log("");
     console.log(`✅ Server running on: ${activeBaseUrl}`);
-    console.log(`📍 Host: ${config.host}:${activePort}`);
+    console.log(`📍 Host: ${listenHost}:${activePort}`);
+    console.log(`🌍 Listening on ${activePort}`);
     console.log("🌐 Public URL will be provided by Render");
     console.log(`🔧 Server mode: ${config.serverMode}`);
     console.log(`🧭 Runtime data mode: ${getRuntimeMode()}`);
