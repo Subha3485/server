@@ -133,6 +133,12 @@ export async function verifyOtp({ sessionId, otp, role, meta = {} }) {
   return createTokenBundle({ role, identity, meta });
 }
 
+export async function createSessionForPhone({ phoneNumber, role, meta = {} }) {
+  validateRole(role);
+  const identity = await resolveIdentityByPhone({ phoneNumber, role });
+  return createTokenBundle({ role, identity, meta });
+}
+
 export async function refreshAccessToken({ refreshToken, role, meta = {} }) {
   validateRole(role);
   const decoded = verifyJwt(refreshToken, config.jwtRefreshSecret, "refresh");

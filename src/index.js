@@ -6,11 +6,13 @@ import { createRealtimeServer } from "./realtime.js";
 import { getDatabaseConnectionStatus } from "./db.js";
 import { getRuntimeMode, resolveDbNameForMode } from "./runtime_mode.js";
 
+// In local development we can probe a small port range to avoid manual edits.
 const PORT_RETRY_LIMIT = 10;
 const IS_DYNAMIC_PORT_ASSIGNED = typeof process.env.PORT !== "undefined";
 const DYNAMIC_HOST = "0.0.0.0";
 
 function resolveListenHost() {
+  // Managed platforms typically require binding to all interfaces.
   if (IS_DYNAMIC_PORT_ASSIGNED) {
     return DYNAMIC_HOST;
   }
@@ -33,6 +35,7 @@ function buildPublicBaseUrl(host, port) {
 }
 
 async function listenWithPortRetry(server, host, preferredPort) {
+  // If the platform controls PORT, do a single strict bind attempt.
   if (IS_DYNAMIC_PORT_ASSIGNED) {
     await new Promise((resolve, reject) => {
       const onError = (error) => {
@@ -85,6 +88,7 @@ async function listenWithPortRetry(server, host, preferredPort) {
 }
 
 try {
+  // Boot order is important: DB first, then web/realtime surfaces.
   await initializeDatabase();
   const dbStatus = await getDatabaseConnectionStatus();
 
@@ -105,6 +109,7 @@ try {
   });
 
   setImmediate(() => {
+    // Startup banner is deferred so fatal startup errors are logged first.
     console.log("\n");
     console.log("╔═══════════════════════════════════════════════════════════╗");
     console.log("║                                                           ║");

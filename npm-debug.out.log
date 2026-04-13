@@ -1,0 +1,4 @@
+
+> buslogistic-server@1.0.0 start
+> node --import ./src/load_env.js src/index.js
+

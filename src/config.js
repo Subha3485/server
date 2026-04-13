@@ -33,6 +33,10 @@ export const config = {
   msg91AuthKey: process.env.MSG91_AUTH_KEY ?? "",
   msg91TemplateId: process.env.MSG91_TEMPLATE_ID ?? "",
   msg91SenderId: process.env.MSG91_SENDER_ID ?? "",
+  firebaseServiceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH ?? "",
+  firebaseProjectId: process.env.FIREBASE_PROJECT_ID ?? "",
+  firebaseClientEmail: process.env.FIREBASE_CLIENT_EMAIL ?? "",
+  firebasePrivateKey: (process.env.FIREBASE_PRIVATE_KEY ?? "").replace(/\\n/g, "\n"),
   allowedOrigins:
     rawAllowedOrigins.trim() === "*"
       ? "*"

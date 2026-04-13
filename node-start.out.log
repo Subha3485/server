@@ -1,0 +1,32 @@
+📦 Initializing database indices...
+🔗 Attempting to connect to MongoDB...
+✅ MongoDB connected successfully!
+📚 Live DB: buslogistic_live
+📚 Mock DB: buslogistic_mock
+✅ Indices ready for mode: live
+✅ Indices ready for mode: mock
+✅ Database initialization completed successfully!
+ENV PORT: undefined
+
+
+╔═══════════════════════════════════════════════════════════╗
+║                                                           ║
+║          🚌 BUS LOGISTICS SERVER STARTED                 ║
+║                                                           ║
+╚═══════════════════════════════════════════════════════════╝
+
+✅ Server running on: http://localhost:4000
+📍 Host: 0.0.0.0:4000
+🌍 Listening on 4000
+🌐 Public URL will be provided by Render
+🔧 Server mode: test
+🧭 Runtime data mode: live
+🗃️  Live DB: buslogistic_live
+🗃️  Mock DB: buslogistic_mock
+🧪 Mongo status: CONNECTED
+🛠️  Admin panel: http://localhost:4000/admin
+⚡ Realtime socket: http://localhost:4000
+
+Server is ready to accept connections!
+
+

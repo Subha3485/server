@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import { readFile } from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import { config } from "./config.js";
@@ -9,6 +10,7 @@ import { broadcastTripEvent, broadcastTripUpdate } from "./realtime.js";
 import { getCollections, getDatabaseConnectionStatus, invalidateCache } from "./db.js";
 import { getAllowedRuntimeModes, getRuntimeMode, resolveDbNameForMode, setRuntimeMode } from "./runtime_mode.js";
 import {
+  createSessionForPhone,
   getIdentityFromAccessToken,
   listSessions,
   logout,
@@ -52,6 +54,7 @@ const __dirname = path.dirname(__filename);
 export function createApp(io) {
   const app = express();
 
+  // Required behind reverse proxies so req.ip and secure cookie logic work correctly.
   app.set("trust proxy", 1);
   app.use(
     cors({
@@ -109,6 +112,7 @@ export function createApp(io) {
     res.sendFile(path.resolve(__dirname, "../public/admin/index.html"));
   });
 
+  // Register customer/driver/admin auth routes with shared handler logic.
   registerAuthRoutes(app, "", "customer");
   registerAuthRoutes(app, "/driver", "driver");
   registerAuthRoutes(app, "/admin", "admin");
@@ -199,7 +203,7 @@ export function createApp(io) {
       throw createBadRequest("Booking not found.");
     }
 
-    // Store passenger location signal for analytics and backup tracking
+    // Store passenger location signal for analytics and backup tracking.
     const signalData = {
       bookingId: req.params.bookingId,
       lat: Number(lat),
@@ -208,7 +212,7 @@ export function createApp(io) {
       timestamp: new Date().toISOString()
     };
 
-    // If booking is active with a trip, broadcast to subscribers
+    // If booking is active with a trip, broadcast an informational event.
     if (booking.slot?.busNumber) {
       broadcastTripEvent(io, booking.id, {
         type: "passenger.signal",
@@ -224,6 +228,7 @@ export function createApp(io) {
     });
   }));
 
+  // Everything under /api/admin requires an authenticated admin token.
   app.use("/api/admin", requireAuth("admin"));
 
   app.get("/api/admin/summary", asyncHandler(async (_req, res) => {
@@ -401,6 +406,7 @@ export function createApp(io) {
 }
 
 function asyncHandler(handler) {
+  // Central wrapper to preserve async/await style and still route errors to middleware.
   return async (req, res, next) => {
     try {
       await handler(req, res, next);
@@ -449,6 +455,108 @@ async function handleVerifyOtp(req, res, role) {
     data: {
       ...auth,
       ...serializeAuthIdentity(me)
+    }
+  });
+}
+
+async function verifyFirebaseIdToken(firebaseIdToken) {
+  if (!firebaseIdToken) {
+    throw createBadRequest("firebaseIdToken is required.");
+  }
+
+  const fileCredentials = await loadFirebaseServiceAccount(config.firebaseServiceAccountPath);
+  const credentials = fileCredentials ?? {
+    projectId: config.firebaseProjectId,
+    clientEmail: config.firebaseClientEmail,
+    privateKey: config.firebasePrivateKey
+  };
+  if (!credentials.projectId || !credentials.clientEmail || !credentials.privateKey) {
+    throw createBadRequest("Firebase Admin credentials are not configured on server.");
+  }
+
+  let admin;
+  try {
+    admin = await import("firebase-admin");
+  } catch {
+    throw createBadRequest("firebase-admin package is missing. Run npm install firebase-admin.");
+  }
+
+  const existingApp = admin.apps.find((app) => app.name === "buslogistic-firebase");
+  const app = existingApp
+    ?? admin.initializeApp(
+      {
+        credential: admin.cert(credentials)
+      },
+      "buslogistic-firebase"
+    );
+
+  try {
+    return await admin.getAuth(app).verifyIdToken(firebaseIdToken);
+  } catch {
+    throw createBadRequest("Invalid Firebase token.");
+  }
+}
+
+async function loadFirebaseServiceAccount(serviceAccountPath) {
+  if (!serviceAccountPath) {
+    return null;
+  }
+
+  let content;
+  try {
+    content = await readFile(serviceAccountPath, "utf8");
+  } catch {
+    throw createBadRequest("Unable to read Firebase service account file.");
+  }
+
+  let json;
+  try {
+    json = JSON.parse(content);
+  } catch {
+    throw createBadRequest("Firebase service account file must be valid JSON.");
+  }
+
+  const projectId = String(json.project_id ?? "").trim();
+  const clientEmail = String(json.client_email ?? "").trim();
+  const privateKey = String(json.private_key ?? "").replace(/\\n/g, "\n");
+
+  if (!projectId || !clientEmail || !privateKey) {
+    throw createBadRequest(
+      "Firebase service account file must include project_id, client_email, and private_key."
+    );
+  }
+
+  return {
+    projectId,
+    clientEmail,
+    privateKey
+  };
+}
+
+async function handleFirebaseLogin(req, res, role) {
+  const { firebaseIdToken, phoneNumber } = req.body;
+  if (!phoneNumber) {
+    throw createBadRequest("phoneNumber is required.");
+  }
+
+  const decoded = await verifyFirebaseIdToken(firebaseIdToken);
+  const tokenPhone = String(decoded.phone_number ?? "").replace(/^\+91/, "");
+  const requestedPhone = String(phoneNumber).replace(/^\+91/, "");
+  if (!tokenPhone || tokenPhone != requestedPhone) {
+    throw createBadRequest("Firebase token phone number does not match request.");
+  }
+
+  const session = await createSessionForPhone({
+    phoneNumber: requestedPhone,
+    role,
+    meta: readRequestMeta(req)
+  });
+  setRefreshCookie(res, session.refreshToken);
+  res.json({
+    message: "Logged in successfully.",
+    data: {
+      ...session,
+      provider: "firebase"
     }
   });
 }
@@ -525,6 +633,7 @@ function requestMeta(req) {
 }
 
 function getRefreshToken(req) {
+  // Body token is accepted for native apps; cookies support browser sessions.
   if (req.body?.refreshToken) {
     return req.body.refreshToken;
   }
@@ -534,11 +643,13 @@ function getRefreshToken(req) {
 }
 
 function registerAuthRoutes(app, prefix, role) {
+  // Role-aware endpoint registration avoids route copy-paste across user types.
   const base = `/api${prefix}/auth`;
 
   app.post(`${base}/send-otp`, asyncHandler((req, res) => handleSendOtp(req, res, role)));
   app.post(`${base}/resend-otp`, asyncHandler((req, res) => handleResendOtp(req, res, role)));
   app.post(`${base}/verify-otp`, asyncHandler((req, res) => handleVerifyOtp(req, res, role)));
+  app.post(`${base}/firebase-login`, asyncHandler((req, res) => handleFirebaseLogin(req, res, role)));
   app.post(`${base}/refresh`, asyncHandler((req, res) => handleRefresh(req, res, role)));
   app.post(`${base}/logout`, asyncHandler((req, res) => handleLogout(req, res, role)));
   app.post(`${base}/logout-all`, requireAuth(role), asyncHandler(handleLogoutAllSessions));
